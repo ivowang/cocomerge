@@ -23,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("log")
 
+    ready_parser = subparsers.add_parser("ready")
+    ready_parser.add_argument("session")
+
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("session")
 
@@ -128,6 +131,39 @@ def _main(argv: list[str] | None = None) -> int:
         initialize_schema(db)
         print(format_events(db), end="")
         return 0
+    if args.command == "ready":
+        from .config import find_repo_root, load_config, validate_config
+        from .protocol import decode_message
+        from .state import connect, get_session, initialize_schema
+        from .transport import send_message
+
+        repo = find_repo_root()
+        config = load_config(repo)
+        validate_config(repo, config)
+        db = connect(repo)
+        initialize_schema(db)
+        session = get_session(db, args.session)
+        if session is None:
+            raise RuntimeError(f"Unknown session: {args.session}")
+        socket_path = repo / config.socket_path
+        if not socket_path.exists():
+            raise RuntimeError("coconut daemon is not running")
+        raw = send_message(
+            socket_path,
+            {"type": "ready_to_integrate", "session": args.session},
+            timeout=5,
+        )
+        response = decode_message(raw)
+        if response.get("type") == "error":
+            raise RuntimeError(response["message"])
+        if response.get("type") == "queued" and response.get("session") == args.session:
+            print(f"Queued {args.session}")
+            return 0
+        if response.get("type") == "ack" and response.get("session") == args.session:
+            message = response.get("message") or "no changes to integrate"
+            print(f"{args.session}: {message}")
+            return 0
+        raise RuntimeError("Unexpected ready response")
     if args.command == "resume":
         from .config import find_repo_root, load_config
         from .state import (

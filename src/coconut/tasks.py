@@ -81,8 +81,9 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
                 "",
                 "## Completion",
                 "",
-                "When done, signal `fusion_done`. If blocked, signal `fusion_blocked`",
-                "with a reason.",
+                f"After committing the final candidate, run `coconut done {task.session}`.",
+                "Coconut will verify, publish local `main`, and push the configured remote.",
+                f"If you cannot complete the integration safely, run `coconut block {task.session} \"<reason>\"`.",
                 "",
             ]
         ),

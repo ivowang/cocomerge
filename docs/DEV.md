@@ -66,7 +66,9 @@ Session to daemon:
 - `register`: attach a session agent and runtime metadata.
 - `heartbeat`: keep the session connected.
 - `shutdown`: mark the session disconnected.
-- `ready_to_integrate`: request queueing.
+- `ready_to_integrate`: request queueing. The public CLI exposes this as
+  `coconut ready <session>`. The daemon queues the session only when the
+  session has work to integrate.
 - `fusion_done`: report that the current candidate is ready to verify/publish.
 - `fusion_blocked`: report that the Codex session cannot safely integrate.
 
@@ -96,7 +98,8 @@ resets the session worktree to latest `main`, writes a task file, then sends
 
 The task file is created by `src/coconut/tasks.py`. It includes the snapshot
 commit, latest main, last seen main, diff summary, verification command, and
-completion instructions.
+completion instructions. The generated instructions name the concrete CLI
+commands, `coconut done <session>` and `coconut block <session> "<reason>"`.
 
 ## Publishing Flow
 

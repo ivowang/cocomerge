@@ -863,6 +863,21 @@ def handle_session_message(
             raise RuntimeError(f"invalid session state for ready_to_integrate: {session.state}")
         if session.active_task is not None:
             raise RuntimeError(f"session has active task: {session_name}")
+        if not _session_has_changes(session):
+            dequeue_session(db, session_name)
+            if session.state != "clean":
+                transition_session(
+                    db,
+                    session_name,
+                    "clean",
+                    reason="ready requested with no changes",
+                    active_task=None,
+                )
+            return {
+                "type": "ack",
+                "session": session_name,
+                "message": "no changes to integrate",
+            }
         transition_session(db, session_name, "queued", reason="session ready", active_task=None)
         enqueue_session(db, session_name)
         return {"type": "queued", "session": session_name}

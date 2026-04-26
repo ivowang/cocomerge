@@ -58,7 +58,7 @@ Session 发给 daemon：
 - `register`：注册 session agent 和 runtime metadata。
 - `heartbeat`：维持连接状态。
 - `shutdown`：标记 session 断开。
-- `ready_to_integrate`：请求入队。
+- `ready_to_integrate`：请求入队。公开 CLI 中对应 `coconut ready <session>`。daemon 只会在该 session 确实有待集成改动时入队。
 - `fusion_done`：报告当前 candidate 可以验证和发布。
 - `fusion_blocked`：报告 Codex 无法安全完成 integration。
 
@@ -82,6 +82,7 @@ daemon loop 依次执行：
 `process_queue_once()` 只有在 integration lock 空闲时才会启动任务。它会同时认领 lock 和 active task，发送 `freeze`，准备 snapshot，将 session worktree 重置到最新 `main`，写出 task file，然后发送 `start_fusion`。
 
 task file 由 `src/coconut/tasks.py` 创建，包含 snapshot commit、latest main、last seen main、diff summary、验证命令和完成指令。
+生成的完成指令会写明具体 CLI 命令：`coconut done <session>` 和 `coconut block <session> "<reason>"`。
 
 ## 发布流程
 
