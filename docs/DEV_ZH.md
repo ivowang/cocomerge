@@ -10,8 +10,15 @@ Coconut 是围绕 Git 和 Codex 构建的单机协作编排层，主要由四部
 - 持久状态：`src/coconut/state.py`，使用 `.coconut/state.sqlite` 中的 SQLite。
 - Daemon 编排：`src/coconut/daemon.py`。
 - Session 侧协作 agent：`src/coconut/agent.py`。
+- Session worktree 初始化：`src/coconut/session.py`，包括为 Codex 生成 Coconut 指导文件。
 
 daemon 和 session agent 通过 Unix domain socket 传输 JSONL 消息。Git 操作通过 `src/coconut/git.py` 中的 helper 调用 Git CLI 完成。
+
+## 生成的 Session 指导文件
+
+`ensure_session_worktree()` 会在每个 managed worktree 中写入一个 `AGENTS.md`。这个文件告诉 Codex 它正在 Coconut session 中工作，说明当前 session branch、main branch，以及 `ready`、`done`、`block` 工作流。
+
+这个生成文件不能让 session 一启动就变 dirty。Coconut 在写入前会把 `/AGENTS.md` 加入仓库本地的 `.git/info/exclude`，因此 Git status、snapshot 和 `git add -A` 都会忽略它。如果项目本身已经有自己的 `AGENTS.md`，Coconut 不会覆盖项目指令。
 
 ## 状态模型
 

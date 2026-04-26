@@ -13,10 +13,25 @@ four main parts:
   `.coconut/state.sqlite`.
 - Daemon orchestration in `src/coconut/daemon.py`.
 - Session-side cooperation in `src/coconut/agent.py`.
+- Session worktree setup in `src/coconut/session.py`, including generated
+  Coconut guidance for Codex.
 
 The daemon and session agents communicate over Unix domain sockets with JSONL
 messages. Git operations are delegated to the Git CLI through helpers in
 `src/coconut/git.py`.
+
+## Generated Session Instructions
+
+`ensure_session_worktree()` writes an `AGENTS.md` file into each managed
+worktree. The file tells Codex that it is working inside a Coconut session,
+names the session branch and main branch, and explains the `ready`, `done`, and
+`block` workflow.
+
+The generated file must not create integration work by itself. Coconut adds
+`/AGENTS.md` to the repository's local `.git/info/exclude` before writing it,
+so Git status, snapshots, and `git add -A` ignore the file. If the project
+already has its own `AGENTS.md`, Coconut leaves it untouched instead of
+overwriting project instructions.
 
 ## State Model
 

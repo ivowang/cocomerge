@@ -86,8 +86,9 @@ coconut join --name bob -- codex
 - 一个名为 `coconut/<name>` 的 branch；
 - 一个位于 `.coconut/worktrees/<name>` 的 worktree；
 - 一个和 daemon 通信的 session agent。
+- 一个位于该 worktree 根目录、被 Git 忽略的 `AGENTS.md`，除非项目本身已经有自己的 `AGENTS.md`。
 
-Codex 进程会运行在这个 managed worktree 中。开发者像平常一样让 Codex 修改代码，但不要让 Codex 直接操作 `main`。
+Codex 进程会运行在这个 managed worktree 中。开发者像平常一样让 Codex 修改代码，但不要让 Codex 直接操作 `main`。生成的 `AGENTS.md` 会告诉 Codex 它正处在 Coconut 管理的多人协作 session 里，并提醒它使用 `coconut ready`、`coconut done` 和 `coconut block`，而不是直接 pull、merge 或 push `main`。
 
 ## 合并到主线是怎么触发的
 

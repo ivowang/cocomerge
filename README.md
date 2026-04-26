@@ -102,9 +102,14 @@ Each `join` command creates or reuses:
 - a branch named `coconut/<name>`;
 - a worktree under `.coconut/worktrees/<name>`;
 - a session agent that talks to the daemon.
+- a Git-ignored `AGENTS.md` in that worktree, unless the project already has
+  its own `AGENTS.md`.
 
 The Codex process runs inside that managed worktree. Developers should ask
-Codex to edit files there as usual.
+Codex to edit files there as usual. The generated `AGENTS.md` tells Codex that
+it is in a Coconut-managed collaboration session and reminds it to use
+`coconut ready`, `coconut done`, and `coconut block` instead of directly
+pulling, merging, or pushing `main`.
 
 ## How Integration Is Triggered
 
