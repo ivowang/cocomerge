@@ -46,6 +46,16 @@ pip install -e .
 coconut init --main main --verify "pytest" --remote origin
 ```
 
+配置的主分支必须已经存在，并且至少有一个 initial commit。如果使用
+`--remote origin`，这个 remote 也必须已经存在。全新仓库可以先执行：
+
+```bash
+git switch -c main
+git add .
+git commit -m "initial commit"
+git remote add origin <url>  # 只有需要 Coconut 推送远端时才需要
+```
+
 启动 daemon：
 
 ```bash

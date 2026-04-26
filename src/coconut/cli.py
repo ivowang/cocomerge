@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -39,6 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
+        print(f"coconut: {exc}", file=sys.stderr)
+        return 1
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -53,12 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Initialized coconut in {repo / '.coconut'}")
         return 0
     if args.command == "daemon":
-        from .config import find_repo_root, load_config
+        from .config import find_repo_root, load_config, validate_config
         from .daemon import run_daemon
         from .state import connect, initialize_schema
 
         repo = find_repo_root()
         config = load_config(repo)
+        validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
         return run_daemon(repo, db, config)
@@ -66,12 +76,13 @@ def main(argv: list[str] | None = None) -> int:
         import os
 
         from .agent import SessionAgent
-        from .config import find_repo_root, load_config
+        from .config import find_repo_root, load_config, validate_config
         from .session import ensure_session_worktree, register_with_daemon
         from .state import connect, initialize_schema
 
         repo = find_repo_root()
         config = load_config(repo)
+        validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
         record = ensure_session_worktree(repo, config, db, args.name)
@@ -95,23 +106,24 @@ def main(argv: list[str] | None = None) -> int:
             control_thread.join(timeout=2)
             raise
     if args.command == "status":
-        from .config import find_repo_root, load_config
+        from .config import find_repo_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_status
 
         repo = find_repo_root()
         config = load_config(repo)
+        validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
         print(format_status(repo, db, config), end="")
         return 0
     if args.command == "log":
-        from .config import find_repo_root, load_config
+        from .config import find_repo_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_events
 
         repo = find_repo_root()
-        load_config(repo)
+        validate_config(repo, load_config(repo))
         db = connect(repo)
         initialize_schema(db)
         print(format_events(db), end="")

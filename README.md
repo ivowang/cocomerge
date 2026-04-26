@@ -58,6 +58,17 @@ Initialize Coconut once in the Git repository:
 coconut init --main main --verify "pytest" --remote origin
 ```
 
+The configured main branch must already exist and have an initial commit. If
+you use `--remote origin`, that remote must already exist as well. For a fresh
+repository:
+
+```bash
+git switch -c main
+git add .
+git commit -m "initial commit"
+git remote add origin <url>  # only when you want Coconut to push a remote
+```
+
 Start the daemon in a long-running terminal:
 
 ```bash
