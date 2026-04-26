@@ -5,8 +5,8 @@ user-facing workflow is documented in the root [README.md](../README.md).
 
 ## Architecture
 
-Coconut is a single-machine orchestration layer around Git and Codex. It has
-four main parts:
+Coconut is a single-machine orchestration layer around Git and Codex. Its main
+parts are:
 
 - CLI commands in `src/coconut/cli.py`.
 - Persistent state in `src/coconut/state.py`, backed by SQLite under
@@ -14,24 +14,52 @@ four main parts:
 - Daemon orchestration in `src/coconut/daemon.py`.
 - Session-side cooperation in `src/coconut/agent.py`.
 - Session worktree setup in `src/coconut/session.py`, including generated
-  Coconut guidance for Codex.
+  Coconut guidance for Codex and per-worktree Git identity configuration.
 
 The daemon and session agents communicate over Unix domain sockets with JSONL
 messages. Git operations are delegated to the Git CLI through helpers in
 `src/coconut/git.py`.
 
+When a session is joined from tmux, `SessionAgent` records the current tmux
+pane. On `start_fusion`, it writes a prompt file next to the task file and
+pastes a concise sync prompt into that pane with `tmux load-buffer`,
+`paste-buffer`, and `send-keys Enter`.
+
+## Product Command Model
+
+The normal developer command is `coconut sync <session>`.
+
+Internally, `sync` maps to different protocol actions:
+
+- no active task: request queueing with `ready_to_integrate`;
+- active task in `fusing` or retryable `blocked`: report `fusion_done` and let
+  the daemon verify/publish the current session `HEAD`;
+- retryable remote publish recovery: report `fusion_done` again to retry the
+  publish path.
+
+Legacy/internal commands such as `done`, `block`, `resume`, and `abandon` are
+operator or compatibility tools. They are intentionally not part of the normal
+developer workflow.
+
+The daemon does not automatically queue dirty sessions. Dirty work stays local
+until the owning session explicitly runs `sync`.
+
+`join` accepts `--git-user-name` and `--git-user-email`. When supplied, Coconut
+enables Git `extensions.worktreeConfig` and writes `user.name`/`user.email` with
+`git config --worktree`, so each developer's managed worktree can commit with a
+distinct identity under the shared server account. If they are not supplied, an
+effective Git identity must already exist.
+
 ## Generated Session Instructions
 
 `ensure_session_worktree()` writes an `AGENTS.md` file into each managed
-worktree. The file tells Codex that it is working inside a Coconut session,
-names the session branch and main branch, and explains the `ready`, `done`, and
-`block` workflow.
+worktree. The file tells Codex that it is working inside a Coconut session and
+that normal collaboration uses `coconut sync <session>`.
 
 The generated file must not create integration work by itself. Coconut adds
 `/AGENTS.md` to the repository's local `.git/info/exclude` before writing it,
 so Git status, snapshots, and `git add -A` ignore the file. If the project
-already has its own `AGENTS.md`, Coconut leaves it untouched instead of
-overwriting project instructions.
+already has its own `AGENTS.md`, Coconut leaves it untouched.
 
 ## State Model
 
@@ -62,14 +90,16 @@ one SQLite transaction.
 Important states:
 
 - `clean`: no pending work relative to the session's known main.
-- `dirty`: local changes or commits need integration.
+- `dirty`: local changes or commits need integration. This is now entered by
+  explicit sync paths or legacy state, not by daemon auto-queueing.
 - `queued`: waiting for the daemon to start integration.
 - `snapshot`: the daemon is preparing a snapshot.
 - `frozen`: the session acknowledged freeze.
 - `fusing`: the owning Codex is applying the snapshot on top of latest `main`.
 - `verifying`: Coconut is validating the candidate.
 - `publishing`: Coconut is moving `main` and optionally pushing remote.
-- `blocked`: a semantic or verification failure requires human/Codex action.
+- `blocked`: the active sync task needs the same session to fix and rerun
+  `sync`, or an operator to inspect it.
 - `recovery_required`: Coconut stopped because continuing automatically could
   lose work or mis-publish state.
 - `abandoned`: the session task was manually abandoned.
@@ -81,11 +111,9 @@ Session to daemon:
 - `register`: attach a session agent and runtime metadata.
 - `heartbeat`: keep the session connected.
 - `shutdown`: mark the session disconnected.
-- `ready_to_integrate`: request queueing. The public CLI exposes this as
-  `coconut ready <session>`. The daemon queues the session only when the
-  session has work to integrate.
-- `fusion_done`: report that the current candidate is ready to verify/publish.
-- `fusion_blocked`: report that the Codex session cannot safely integrate.
+- `ready_to_integrate`: internal queue request used by `coconut sync`.
+- `fusion_done`: internal candidate-ready signal used by `coconut sync`.
+- `fusion_blocked`: legacy/internal block signal.
 
 Daemon to session:
 
@@ -103,48 +131,49 @@ The daemon loop performs:
 
 1. heartbeat timeout detection;
 2. external `main` movement detection;
-3. dirty session scanning;
-4. one queue processing attempt.
+3. one queue processing attempt.
 
 `process_queue_once()` only starts a task if the integration lock is free. It
 claims the lock and active task together, sends `freeze`, prepares the snapshot,
-resets the session worktree to latest `main`, writes a task file, then sends
-`start_fusion`.
+stores snapshot/base refs under `refs/coconut/`, resets the session worktree to
+latest `main`, writes a task file, then sends `start_fusion`.
 
 The task file is created by `src/coconut/tasks.py`. It includes the snapshot
 commit, latest main, last seen main, diff summary, verification command, and
-completion instructions. The generated instructions name the concrete CLI
-commands, `coconut done <session>` and `coconut block <session> "<reason>"`.
+the instruction to run `coconut sync <session>` again after committing the
+candidate.
 
 ## Publishing Flow
 
-`publish_candidate()` is called after `fusion_done`.
+`publish_candidate()` is called when active-task `sync` reports completion.
 
 It checks:
 
 - session and task id match;
 - integration lock is owned by the same session/task;
-- session state allows publishing or retrying a recovery publish;
+- recovery retry is limited to remote-push or startup-publishing recovery;
 - worktree has no unsafe Git operation;
 - reported candidate equals session `HEAD`;
+- candidate is not the task base commit, unless Codex created an explicit
+  no-op commit;
 - worktree is clean before verification;
 - verification passes;
 - verification did not modify `HEAD` or dirty the worktree;
 - local `main` can fast-forward to the candidate.
 
-After local publish, Coconut optionally pushes the configured remote. Remote
-failure after local publish is handled conservatively: the session enters
-`recovery_required`, the lock stays held, and the same task can retry after the
-remote issue is resolved.
+After local publish, Coconut records `last_observed_main` before releasing the
+lock. If a remote is configured, Coconut then pushes the candidate. Remote
+failure after local publish is conservative: the session enters
+`recovery_required`, the lock stays held, and `sync` can retry after the remote
+issue is fixed.
 
 On successful publish, Coconut:
 
 1. marks the session clean;
 2. updates `last_seen_main`;
 3. releases the lock;
-4. records `last_observed_main`;
-5. fast-forwards clean idle sessions;
-6. broadcasts `main_updated`.
+4. fast-forwards clean idle sessions;
+5. broadcasts `main_updated`.
 
 ## Recovery Semantics
 
@@ -170,13 +199,7 @@ External main detection:
 - pending Coconut-owned local publish recovery is not misclassified as external
   movement when local `main` equals the locked session candidate.
 
-Manual recovery commands:
-
-- `resume` requeues blocked/recovery sessions only when they do not still own
-  the integration lock.
-- `abandon` marks a session abandoned, dequeues it, and clears a matching or
-  orphaned owner lock.
-- `done` can retry a locked recovery publish when the same task remains active.
+Manual recovery commands are intentionally operator-only.
 
 ## Development Notes
 
@@ -196,6 +219,7 @@ Before publishing, verify that the public tree contains only:
 
 - `src/coconut/`;
 - `pyproject.toml`;
+- `setup.py`;
 - `README.md`;
 - `docs/README_ZH.md`;
 - `docs/DEV.md`;

@@ -2,46 +2,61 @@
 
 [中文说明](docs/README_ZH.md)
 
-coconut coordinates multiple Codex sessions working on the same Git repository
-from one shared server account. Each developer gets an isolated managed
-worktree. Coconut serializes the moments where those worktrees become the new
-`main`.
+coconut coordinates multiple Codex sessions that share one Git repository on one
+server account. It gives every developer an isolated managed worktree, then
+serializes the moment when a developer's work becomes the next `main`.
 
-## Read This First
+## Core Rule
 
-Coconut is not a background auto-merge bot that understands code by itself. It
-is a coordinator around Codex:
+For day-to-day collaboration, a developer only needs one Coconut command:
 
-- The daemon watches managed worktrees, owns the integration lock, verifies
-  candidates, moves local `main`, and optionally pushes the configured remote.
-- Each developer works through a Codex process started by `coconut join`.
-- When a session has changes, Coconut creates an integration task for that same
-  session's Codex. That Codex must re-implement or semantically merge its work
-  on top of the latest `main`.
-- Publishing to `main` happens only after that session reports completion with
-  `coconut done <session>`.
+```bash
+coconut sync <user_name>
+```
 
-The important rule is simple: developers and Codex sessions do not pull, merge,
-or push `main` directly. They edit their own Coconut worktree. Coconut is the
-only process that writes local `main`.
+`sync` means "move this Coconut session to the next safe synchronization
+state." Depending on the session state, it can:
 
-## Who Runs Which Command
+- fast-forward a clean session to the latest `main`;
+- queue a dirty session for integration;
+- after Coconut gives the session a task, publish the committed candidate as
+  the new `main`.
 
-| Command | Usually run by | What it means |
-| --- | --- | --- |
-| `coconut init ...` | repo owner or team operator | Configure Coconut once for this repository. |
-| `coconut daemon` | repo owner or team operator | Start the long-running coordinator. Keep one daemon running. |
-| `coconut join --name alice -- codex` | developer Alice | Start Alice's Codex inside Alice's managed worktree. |
-| `coconut ready alice` | Alice's Codex or Alice | Optional: tell the daemon Alice's current work should be queued now. |
-| `coconut done alice` | Alice's Codex, after an active task is complete | Ask the daemon to verify and publish Alice's current candidate. |
-| `coconut block alice "reason"` | Alice's Codex or Alice, after an active task cannot be completed | Mark the active task blocked and release the integration lock. |
-| `coconut status` / `coconut log` | anyone on the shared account | Inspect state and recent events. |
-| `coconut resume alice` / `coconut abandon alice` | operator or someone doing recovery | Explicitly recover from blocked or recovery states. |
+Developers and Codex sessions must not run `git pull main`, `git merge main`,
+or `git push main` directly. Coconut is the only writer to local `main`.
 
-`done` and `block` are not daemon-internal actions. They are explicit signals
-sent by the owning Codex session or by the developer responsible for that
-session. Running `done` means "the current HEAD of this session worktree is the
-candidate new `main`; Coconut may verify and publish it."
+The daemon does not automatically integrate dirty sessions. Local work stays in
+the developer's managed worktree until that developer or their Codex explicitly
+runs `coconut sync <user_name>`.
+
+## Roles
+
+Operator/startup commands:
+
+```bash
+coconut init --main main --verify "pytest" --remote origin
+coconut daemon
+coconut join --name alice \
+  --git-user-name "Alice Example" \
+  --git-user-email alice@example.com \
+  -- codex
+```
+
+Developer collaboration command:
+
+```bash
+coconut sync alice
+```
+
+Inspection commands:
+
+```bash
+coconut status
+coconut log
+```
+
+Recovery commands exist for operators, but they are not part of the normal
+developer workflow.
 
 ## Installation
 
@@ -56,7 +71,7 @@ This installs the `coconut` console command.
 ## Repository Setup
 
 Run these commands in the project repository that the team wants to develop
-with Coconut, not in the Coconut source repository.
+with Coconut.
 
 The configured main branch must already exist and have an initial commit:
 
@@ -79,10 +94,10 @@ Initialize Coconut once:
 coconut init --main main --verify "pytest" --remote origin
 ```
 
-Use `--remote origin` only if that remote exists. If you only want local
-coordination, omit `--remote`.
+Use `--remote origin` only if that remote exists. Omit `--remote` for local-only
+coordination.
 
-## Starting Work
+## Starting Codex Sessions
 
 Start one daemon in a long-running terminal from the project repository:
 
@@ -90,186 +105,151 @@ Start one daemon in a long-running terminal from the project repository:
 coconut daemon
 ```
 
-Each developer starts Codex through Coconut:
+Start each Codex session through Coconut from that developer's tmux window:
 
 ```bash
-coconut join --name alice -- codex
-coconut join --name bob -- codex
+coconut join --name alice \
+  --git-user-name "Alice Example" \
+  --git-user-email alice@example.com \
+  -- codex
+
+coconut join --name bob \
+  --git-user-name "Bob Example" \
+  --git-user-email bob@example.com \
+  -- codex
 ```
 
-Each `join` command creates or reuses:
+Each joined session gets:
 
 - a branch named `coconut/<name>`;
 - a worktree under `.coconut/worktrees/<name>`;
-- a session agent that talks to the daemon.
+- a session agent that receives Coconut tasks;
 - a Git-ignored `AGENTS.md` in that worktree, unless the project already has
   its own `AGENTS.md`.
 
-The Codex process runs inside that managed worktree. Developers should ask
-Codex to edit files there as usual. The generated `AGENTS.md` tells Codex that
-it is in a Coconut-managed collaboration session and reminds it to use
-`coconut ready`, `coconut done`, and `coconut block` instead of directly
-pulling, merging, or pushing `main`.
+`join` writes the supplied Git identity into that worktree's per-worktree Git
+config, so Coconut snapshot commits and Codex candidate commits have the right
+author. If identity is not supplied, the worktree must already have effective
+`user.name` and `user.email` Git config.
 
-## How Integration Is Triggered
+When `join` runs inside tmux, Coconut detects the current pane and later pastes
+sync prompts directly into the Codex running in that pane. Use `--tmux-target`
+to choose a pane explicitly, or `--no-auto-prompt` to disable prompt injection.
+Without tmux, Coconut still prints the task and prompt file paths.
 
-There are two ways for a session to enter the integration queue:
+The generated `AGENTS.md` tells Codex that it is in a Coconut-managed
+collaboration session and that normal synchronization uses only
+`coconut sync <name>`.
 
-1. Automatic trigger: the daemon scans managed worktrees every few seconds. If
-   a session has uncommitted changes, staged changes, untracked files, or commits
-   after its last seen `main`, Coconut marks it dirty and queues it.
-2. Manual trigger: the owning Codex or developer can run:
+## What `sync` Does
 
-   ```bash
-   coconut ready alice
-   ```
+### Clean Session
 
-   This is only a queue request. It does not publish anything. If Alice has no
-   changes, Coconut prints that there is nothing to integrate.
-
-When the integration lock is free, the daemon picks the next queued session,
-freezes it, snapshots its current work, resets that worktree to the latest
-`main`, and prints a task file path inside that same Codex terminal:
-
-```text
-Coconut task for alice: /path/to/repo/.coconut/tasks/<task>.md
-```
-
-That task file is the handoff from Coconut to Codex. It contains:
-
-- latest `main`;
-- the session's last seen `main`;
-- the snapshot commit;
-- the diff that must be re-implemented or semantically merged;
-- the verification command;
-- the exact completion commands.
-
-## What The Owning Codex Does With A Task
-
-When Alice's Codex receives a task:
-
-1. Read the task file.
-2. Treat the current worktree as latest `main`.
-3. Re-implement or semantically merge Alice's snapshot work on top of it.
-4. Run the relevant checks.
-5. Commit the final candidate.
-6. Make sure the worktree is clean.
-7. Run:
-
-   ```bash
-   coconut done alice
-   ```
-
-Coconut then verifies the candidate with the configured command, fast-forwards
-local `main`, pushes `origin/main` if `--remote origin` was configured,
-fast-forwards clean idle sessions, broadcasts `main_updated`, and starts the
-next queued task.
-
-If Alice's Codex cannot complete the task safely, it should run:
+If Alice has no local work and `main` has advanced, this catches Alice up:
 
 ```bash
-coconut block alice "semantic conflict with auth refactor"
+coconut sync alice
 ```
 
-That releases the integration lock and records the reason. A human can inspect
-the state with `coconut status` and `coconut log`.
+If Alice is already current, Coconut reports that the session is already
+synced.
 
-## Can I Ask Codex To Sync With Main?
+### Dirty Session
 
-Yes, but the instruction must use Coconut's workflow.
+If Alice has local edits or commits, this requests integration:
 
-Good instruction inside Alice's joined Codex:
-
-```text
-Use Coconut to sync with main. Do not run git pull, git merge main, or git push
-main directly. If we have local work, run coconut ready alice, wait for the
-Coconut task, apply the task on latest main, commit the final candidate, and
-then run coconut done alice.
+```bash
+coconut sync alice
 ```
 
-For a clean session, there is usually nothing to do. When Coconut publishes a
-new `main`, it automatically fast-forwards clean idle sessions.
+When Alice reaches the front of the queue, Coconut:
 
-For a dirty session, syncing with `main` means integration. Coconut will not
-blindly pull `main` into the dirty worktree. It snapshots the dirty work,
-resets the worktree to latest `main`, and asks that same Codex to recreate the
-feature correctly on top of latest `main`.
+1. freezes Alice's session;
+2. snapshots Alice's current work;
+3. resets Alice's worktree to the latest `main`;
+4. writes a task file under `.coconut/tasks/`;
+5. prints the task file path inside Alice's Codex terminal.
+
+Alice's Codex reads the task file and re-implements or semantically merges
+Alice's feature on top of the latest `main`. After it commits the final
+candidate and the worktree is clean, it runs the same command again:
+
+```bash
+coconut sync alice
+```
+
+Coconut then verifies the candidate, fast-forwards local `main`, pushes the
+configured remote if one exists, and notifies other sessions.
+
+If the task cannot be completed safely, Codex should stop and explain the
+blocker in its session output. An operator can inspect `coconut status` and
+`coconut log` before deciding how to recover.
 
 ## Normal Example
 
-Alice and Bob both start Codex through Coconut:
+Alice and Bob both start Codex through Coconut. Alice implements feature A; Bob
+implements feature B. Neither branch is integrated automatically.
+
+Alice runs:
 
 ```bash
-coconut join --name alice -- codex
-coconut join --name bob -- codex
+coconut sync alice
 ```
 
-Alice asks Codex to implement feature A. Bob asks Codex to implement feature B.
-Both sessions become dirty.
-
-Coconut queues both sessions. Suppose Alice gets the lock first. Alice's Codex
-receives a task file, applies feature A on latest `main`, commits, and runs:
+Coconut gives Alice's Codex a task. Alice's Codex applies feature A on latest
+`main`, commits, and runs:
 
 ```bash
-coconut done alice
+coconut sync alice
 ```
 
-Coconut verifies and publishes Alice's candidate as the new `main`.
+Now feature A is the new `main`.
 
-Bob is still dirty, so Bob does not simply push his earlier branch. When Bob
-gets the lock, Coconut snapshots Bob's work, resets Bob's worktree to the new
-`main` that already contains feature A, and asks Bob's Codex to implement
-feature B on top of that. Bob's Codex commits and runs:
+Bob later runs:
 
 ```bash
-coconut done bob
+coconut sync bob
 ```
 
-This is the serialization guarantee: feature B is integrated after feature A,
-using the actual post-A mainline as its base.
+Bob's task is based on the current `main`, which already includes feature A.
+Bob's Codex applies feature B on top of that, commits, and runs:
 
-## Recovery Behavior
+```bash
+coconut sync bob
+```
+
+This gives the team a serial mainline even though the Codex sessions worked
+asynchronously.
+
+## Safety Behavior
 
 Coconut prefers stopping over guessing:
 
-- if the lock owner disconnects, the session enters `recovery_required`;
-- if the daemon restarts during integration, incomplete states are recovered
-  conservatively;
-- if local `main` moves outside Coconut, dirty or active sessions enter
-  `recovery_required`;
-- if local `main` advanced but remote push failed, Coconut keeps the lock so the
-  same task can retry `coconut done <session>` after the remote issue is fixed;
-- if verification fails, the task becomes `blocked`.
-
-Use:
-
-```bash
-coconut status
-coconut log
-```
-
-Then choose one explicit action:
-
-```bash
-coconut done alice
-coconut block alice "reason"
-coconut resume alice
-coconut abandon alice
-```
+- a dirty session is not integrated until its owner runs `sync`;
+- only one session owns the integration lock at a time;
+- running `sync` before committing a task candidate is rejected;
+- verification failures keep the task locked so the same session can fix and
+  run `sync` again;
+- remote push failures keep the task locked so `sync` can retry after the
+  remote issue is fixed;
+- unexpected recovery states require operator inspection.
 
 ## Command Reference
+
+Normal developer command:
+
+```bash
+coconut sync alice
+```
+
+Common operator commands:
 
 ```bash
 coconut init --main main --verify "pytest" --remote origin
 coconut daemon
-coconut join --name alice -- codex
-coconut ready alice
+coconut join --name alice --git-user-name "Alice Example" --git-user-email alice@example.com -- codex
 coconut status
 coconut log
-coconut done alice
-coconut block alice "reason"
-coconut resume alice
-coconut abandon alice
 ```
 
 Implementation details are documented in [docs/DEV.md](docs/DEV.md).

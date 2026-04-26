@@ -9,7 +9,6 @@ from typing import Callable
 
 from .config import CoconutConfig
 from .git import (
-    GitError,
     add_all,
     commit,
     current_head,
@@ -48,19 +47,7 @@ from .protocol import decode_message
 from .transport import send_message, serve_forever
 
 
-SKIPPED_STATES = {
-    "abandoned",
-    "blocked",
-    "frozen",
-    "fusing",
-    "publishing",
-    "recovery_required",
-    "snapshot",
-    "verifying",
-}
-
-
-READY_TO_INTEGRATE_STATES = {"clean", "dirty", "queued", "blocked", "recovery_required"}
+READY_TO_INTEGRATE_STATES = {"clean", "dirty", "queued"}
 INCOMPLETE_INTEGRATION_STATES = {"frozen", "snapshot", "fusing", "verifying", "publishing"}
 EXTERNAL_MAIN_RECOVERY_STATES = {"dirty", "queued"} | INCOMPLETE_INTEGRATION_STATES
 
@@ -199,28 +186,6 @@ def _is_locked_pending_publish_recovery(db: sqlite3.Connection, current_main: st
         return False
 
 
-def scan_dirty_sessions(db: sqlite3.Connection) -> None:
-    for session in list_sessions(db):
-        if session.state in SKIPPED_STATES:
-            continue
-        try:
-            dirty = _session_has_changes(session)
-        except (FileNotFoundError, GitError, RuntimeError) as exc:
-            reason = f"worktree unavailable: {exc}"
-            transition_session(
-                db,
-                session.name,
-                "recovery_required",
-                reason=reason,
-                blocked_reason=reason,
-            )
-            continue
-        if dirty:
-            if session.state not in {"dirty", "queued"}:
-                transition_session(db, session.name, "dirty", reason="worktree changed")
-            enqueue_session(db, session.name)
-
-
 def _session_has_changes(session: SessionRecord) -> bool:
     worktree = Path(session.worktree)
     if is_dirty(worktree):
@@ -228,6 +193,26 @@ def _session_has_changes(session: SessionRecord) -> bool:
     if session.last_seen_main is None:
         return False
     return current_head(worktree) != session.last_seen_main
+
+
+def _sync_clean_session_to_main(
+    repo: Path,
+    db: sqlite3.Connection,
+    config: CoconutConfig,
+    session: SessionRecord,
+) -> str:
+    worktree = Path(session.worktree)
+    latest_main = current_head(repo, config.main_branch)
+    head = current_head(worktree)
+    if head == latest_main:
+        if session.last_seen_main != latest_main:
+            update_last_seen_main(db, session.name, latest_main)
+        return "already synced"
+    if session.last_seen_main is not None and head == session.last_seen_main:
+        fast_forward_ref(worktree, session.branch, latest_main)
+        update_last_seen_main(db, session.name, latest_main)
+        return f"synced to {latest_main}"
+    return "no changes to sync"
 
 
 def prepare_integration(
@@ -274,6 +259,7 @@ def prepare_integration(
             raise RuntimeError("no changes to snapshot")
 
         update_ref(worktree, f"refs/coconut/snapshots/{task_id}", snapshot)
+        update_ref(worktree, f"refs/coconut/bases/{task_id}", latest_main)
         diff_summary = diff(worktree, base, snapshot)
         reset_hard(worktree, latest_main)
         task = IntegrationTask(
@@ -542,10 +528,14 @@ def publish_candidate(
     expected_lock = {"owner": session_name, "task_id": task_id}
     if get_lock(db) != expected_lock:
         raise RuntimeError("integration lock is not held by this task")
-    # recovery_required is only retryable after a remote publish failure that
-    # kept the integration lock held for this same session/task.
-    if session.state not in {"fusing", "verifying", "publishing", "recovery_required"}:
+    if session.state not in {"fusing", "blocked", "verifying", "publishing", "recovery_required"}:
         raise RuntimeError(f"invalid session state for publish: {session.state}")
+    if session.state == "recovery_required" and not _is_retryable_publish_recovery(session):
+        reason = session.blocked_reason or "recovery required"
+        raise RuntimeError(
+            f"Cannot continue sync from recovery_required: {reason}. "
+            "An operator must inspect the task before retrying or abandoning it."
+        )
 
     worktree = Path(session.worktree)
     try:
@@ -572,7 +562,6 @@ def publish_candidate(
             active_task=task_id,
             blocked_reason=unsafe,
         )
-        _release_lock_if_owned(db, session_name, task_id)
         raise RuntimeError(f"unsafe Git state: {unsafe}")
 
     try:
@@ -603,6 +592,21 @@ def publish_candidate(
         _release_lock_if_owned(db, session_name, task_id)
         raise RuntimeError(reason)
 
+    base = _task_base(worktree, task_id)
+    if base is not None and candidate == base:
+        _stop_publish(
+            db,
+            session_name,
+            task_id,
+            state="blocked",
+            reason=(
+                "sync task has no candidate commit; implement the snapshot feature "
+                "or create an explicit no-op commit before running sync again"
+            ),
+            release_lock=False,
+        )
+        return
+
     try:
         if is_dirty(worktree):
             reason = "worktree is dirty before verify"
@@ -612,6 +616,7 @@ def publish_candidate(
                 task_id,
                 state="blocked",
                 reason=reason,
+                release_lock=False,
             )
             return
     except Exception as exc:
@@ -650,7 +655,6 @@ def publish_candidate(
             active_task=task_id,
             blocked_reason=output[-1000:] or "verify failed",
         )
-        _release_lock_if_owned(db, session_name, task_id)
         return
 
     try:
@@ -687,12 +691,14 @@ def publish_candidate(
             task_id,
             state="blocked",
             reason=reason,
+            release_lock=False,
         )
         return
 
     transition_session(db, session_name, "publishing", reason="verify passed", active_task=task_id)
     try:
         fast_forward_ref(repo, config.main_branch, candidate)
+        set_metadata(db, "last_observed_main", candidate)
     except Exception as exc:
         reason = str(exc) or exc.__class__.__name__
         transition_session(
@@ -724,7 +730,6 @@ def publish_candidate(
     transition_session(db, session_name, "clean", reason="published", active_task=None)
     update_last_seen_main(db, session_name, candidate)
     _release_lock_if_owned(db, session_name, task_id)
-    set_metadata(db, "last_observed_main", candidate)
     fast_forward_clean_sessions(repo, db, config, candidate)
     broadcast_main_updated(db, candidate, send_control=send_control)
 
@@ -737,6 +742,7 @@ def _stop_publish(
     state: str,
     reason: str,
     blocked_reason: str | None = None,
+    release_lock: bool = True,
 ) -> None:
     transition_session(
         db,
@@ -746,7 +752,20 @@ def _stop_publish(
         active_task=task_id,
         blocked_reason=blocked_reason or reason,
     )
-    _release_lock_if_owned(db, session_name, task_id)
+    if release_lock:
+        _release_lock_if_owned(db, session_name, task_id)
+
+
+def _task_base(worktree: Path, task_id: str) -> str | None:
+    try:
+        return current_head(worktree, f"refs/coconut/bases/{task_id}")
+    except Exception:
+        return None
+
+
+def _is_retryable_publish_recovery(session: SessionRecord) -> bool:
+    reason = session.blocked_reason or ""
+    return reason.startswith("remote push failed") or reason == "startup recovery from publishing"
 
 
 def _stop_queue_attempt(
@@ -864,21 +883,22 @@ def handle_session_message(
         if session.active_task is not None:
             raise RuntimeError(f"session has active task: {session_name}")
         if not _session_has_changes(session):
+            sync_message = _sync_clean_session_to_main(repo, db, config, session)
             dequeue_session(db, session_name)
             if session.state != "clean":
                 transition_session(
                     db,
                     session_name,
                     "clean",
-                    reason="ready requested with no changes",
+                    reason="sync requested with no changes",
                     active_task=None,
                 )
             return {
                 "type": "ack",
                 "session": session_name,
-                "message": "no changes to integrate",
+                "message": sync_message,
             }
-        transition_session(db, session_name, "queued", reason="session ready", active_task=None)
+        transition_session(db, session_name, "queued", reason="sync requested", active_task=None)
         enqueue_session(db, session_name)
         return {"type": "queued", "session": session_name}
 
@@ -974,7 +994,6 @@ def run_daemon(repo: Path, db: sqlite3.Connection, config: CoconutConfig) -> int
         while True:
             detect_disconnected_sessions(db)
             if not detect_external_main_update(repo, db, config):
-                scan_dirty_sessions(db)
                 process_queue_once(repo, db, config)
             time.sleep(config.dirty_interval_s)
     finally:

@@ -4,19 +4,41 @@
 
 ## 架构
 
-Coconut 是围绕 Git 和 Codex 构建的单机协作编排层，主要由四部分组成：
+Coconut 是围绕 Git 和 Codex 构建的单机协作编排层，主要由以下部分组成：
 
 - CLI：`src/coconut/cli.py`。
 - 持久状态：`src/coconut/state.py`，使用 `.coconut/state.sqlite` 中的 SQLite。
 - Daemon 编排：`src/coconut/daemon.py`。
 - Session 侧协作 agent：`src/coconut/agent.py`。
-- Session worktree 初始化：`src/coconut/session.py`，包括为 Codex 生成 Coconut 指导文件。
+- Session worktree 初始化：`src/coconut/session.py`，包括为 Codex 生成 Coconut 指导文件和配置 per-worktree Git identity。
 
 daemon 和 session agent 通过 Unix domain socket 传输 JSONL 消息。Git 操作通过 `src/coconut/git.py` 中的 helper 调用 Git CLI 完成。
 
+当 session 从 tmux 中 join 时，`SessionAgent` 会记录当前 tmux pane。收到 `start_fusion` 后，它会在 task file 旁边写出 prompt file，并通过 `tmux load-buffer`、`paste-buffer` 和 `send-keys Enter` 把简短 sync prompt 粘贴到这个 pane 中正在运行的 Codex。
+
+## 产品命令模型
+
+普通开发者命令是：
+
+```bash
+coconut sync <session>
+```
+
+内部实现中，`sync` 会根据状态映射到不同协议动作：
+
+- 没有 active task：通过 `ready_to_integrate` 请求入队；
+- active task 处于 `fusing` 或可重试 `blocked`：通过 `fusion_done` 报告当前 session `HEAD` 是 candidate，让 daemon 验证和发布；
+- 可重试 remote publish recovery：再次通过 `fusion_done` 重试 publish 路径。
+
+`done`、`block`、`resume`、`abandon` 等 legacy/internal 命令只面向 operator 或兼容场景，不属于普通开发者工作流。
+
+daemon 不会自动把 dirty session 入队。dirty work 会留在本地，直到 owner 显式运行 `sync`。
+
+`join` 接受 `--git-user-name` 和 `--git-user-email`。传入后，Coconut 会启用 Git `extensions.worktreeConfig`，并用 `git config --worktree` 写入 `user.name`/`user.email`，这样同一个服务器账号下的不同开发者也能在各自 managed worktree 中使用不同提交身份。如果没有传入，worktree 必须已经能读取到有效 Git identity。
+
 ## 生成的 Session 指导文件
 
-`ensure_session_worktree()` 会在每个 managed worktree 中写入一个 `AGENTS.md`。这个文件告诉 Codex 它正在 Coconut session 中工作，说明当前 session branch、main branch，以及 `ready`、`done`、`block` 工作流。
+`ensure_session_worktree()` 会在每个 managed worktree 中写入一个 `AGENTS.md`。这个文件告诉 Codex 它正在 Coconut session 中工作，并说明正常协作只使用 `coconut sync <session>`。
 
 这个生成文件不能让 session 一启动就变 dirty。Coconut 在写入前会把 `/AGENTS.md` 加入仓库本地的 `.git/info/exclude`，因此 Git status、snapshot 和 `git add -A` 都会忽略它。如果项目本身已经有自己的 `AGENTS.md`，Coconut 不会覆盖项目指令。
 
@@ -47,14 +69,14 @@ lock 和 `active_task` 必须保持一致。队列处理通过 `claim_integratio
 重要状态如下：
 
 - `clean`：相对已知 main 没有待集成改动。
-- `dirty`：存在需要集成的本地改动或 commit。
+- `dirty`：存在需要集成的本地改动或 commit。当前不再由 daemon 自动扫描入队，只保留给显式 sync 路径或历史状态。
 - `queued`：等待 daemon 开始 integration。
 - `snapshot`：daemon 正在准备 snapshot。
 - `frozen`：session 已确认 freeze。
 - `fusing`：拥有任务的 Codex 正在最新 `main` 上融合 snapshot。
 - `verifying`：Coconut 正在验证 candidate。
 - `publishing`：Coconut 正在移动 `main` 并可选推送 remote。
-- `blocked`：语义冲突或验证失败，需要人工/Codex 处理。
+- `blocked`：active sync task 需要同一个 session 修复后再次运行 `sync`，或由 operator 检查。
 - `recovery_required`：继续自动处理可能丢失改动或错误发布，因此需要显式恢复。
 - `abandoned`：session task 被手动放弃。
 
@@ -65,9 +87,9 @@ Session 发给 daemon：
 - `register`：注册 session agent 和 runtime metadata。
 - `heartbeat`：维持连接状态。
 - `shutdown`：标记 session 断开。
-- `ready_to_integrate`：请求入队。公开 CLI 中对应 `coconut ready <session>`。daemon 只会在该 session 确实有待集成改动时入队。
-- `fusion_done`：报告当前 candidate 可以验证和发布。
-- `fusion_blocked`：报告 Codex 无法安全完成 integration。
+- `ready_to_integrate`：`coconut sync` 使用的内部入队请求。
+- `fusion_done`：`coconut sync` 使用的内部 candidate-ready 信号。
+- `fusion_blocked`：legacy/internal 阻塞信号。
 
 Daemon 发给 session：
 
@@ -83,40 +105,38 @@ daemon loop 依次执行：
 
 1. heartbeat timeout 检测；
 2. external `main` movement 检测；
-3. dirty session 扫描；
-4. 一次 queue processing attempt。
+3. 一次 queue processing attempt。
 
-`process_queue_once()` 只有在 integration lock 空闲时才会启动任务。它会同时认领 lock 和 active task，发送 `freeze`，准备 snapshot，将 session worktree 重置到最新 `main`，写出 task file，然后发送 `start_fusion`。
+`process_queue_once()` 只有在 integration lock 空闲时才会启动任务。它会同时认领 lock 和 active task，发送 `freeze`，准备 snapshot，把 snapshot/base ref 保存到 `refs/coconut/`，将 session worktree 重置到最新 `main`，写出 task file，然后发送 `start_fusion`。
 
-task file 由 `src/coconut/tasks.py` 创建，包含 snapshot commit、latest main、last seen main、diff summary、验证命令和完成指令。
-生成的完成指令会写明具体 CLI 命令：`coconut done <session>` 和 `coconut block <session> "<reason>"`。
+task file 由 `src/coconut/tasks.py` 创建，包含 snapshot commit、latest main、last seen main、diff summary、验证命令，以及提交 candidate 后再次运行 `coconut sync <session>` 的指令。
 
 ## 发布流程
 
-`fusion_done` 触发 `publish_candidate()`。
+active-task `sync` 会触发 `publish_candidate()`。
 
 发布前会检查：
 
 - session 和 task id 匹配；
 - integration lock 属于同一个 session/task；
-- session 状态允许发布或重试 recovery publish；
+- recovery retry 只限 remote-push 或 startup-publishing recovery；
 - worktree 没有未完成的危险 Git 操作；
 - candidate 等于 session `HEAD`；
+- candidate 不是 task base commit，除非 Codex 创建了显式 no-op commit；
 - 验证前 worktree 干净；
 - verification 通过；
 - verification 没有改变 `HEAD` 或弄脏 worktree；
 - 本地 `main` 可以 fast-forward 到 candidate。
 
-本地 publish 后，Coconut 会按配置可选 push remote。如果本地 `main` 已经前进但 remote push 失败，Coconut 会保守处理：session 进入 `recovery_required`，锁保持占用，同一个 task 可以在远端问题修复后重试。
+本地 publish 后，Coconut 会先记录 `last_observed_main`，再释放 lock。如果配置了 remote，随后推送 candidate。remote push 失败时会保守处理：session 进入 `recovery_required`，锁保持占用，远端问题修复后可以继续运行 `sync` 重试。
 
 发布成功后，Coconut 会：
 
 1. 将 session 标记为 clean；
 2. 更新 `last_seen_main`；
 3. 释放 lock；
-4. 记录 `last_observed_main`；
-5. fast-forward clean idle sessions；
-6. 广播 `main_updated`。
+4. fast-forward clean idle sessions；
+5. 广播 `main_updated`。
 
 ## 恢复语义
 
@@ -138,11 +158,7 @@ External main detection：
 - 如果 `main` 被 Coconut 以外的过程移动，dirty/queued/active integration session 会进入 `recovery_required`；
 - 如果本地 `main` 等于某个持锁 session 的 candidate，且处于 Coconut 自己的 pending publish recovery，不会被误判为 external movement。
 
-手动恢复命令：
-
-- `resume` 只会在 session 不再拥有 integration lock 时重新入队 blocked/recovery session。
-- `abandon` 会标记 session abandoned、移出队列，并在匹配或孤儿 owner lock 存在时清除它。
-- `done` 可以在同一个 task 仍 active 时重试 locked recovery publish。
+手动恢复命令只面向 operator。
 
 ## 维护说明
 
@@ -160,6 +176,7 @@ git diff --check HEAD
 
 - `src/coconut/`；
 - `pyproject.toml`；
+- `setup.py`；
 - `README.md`；
 - `docs/README_ZH.md`；
 - `docs/DEV.md`；

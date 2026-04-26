@@ -4,9 +4,16 @@ import argparse
 import sys
 
 
+RECOVERY_COMMANDS = {"resume", "abandon", "done", "block"}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="coconut")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command",
+        metavar="{init,daemon,join,sync,status,log}",
+        required=True,
+    )
 
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("--main", default="main")
@@ -17,14 +24,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     join_parser = subparsers.add_parser("join")
     join_parser.add_argument("--name", required=True)
+    join_parser.add_argument("--git-user-name")
+    join_parser.add_argument("--git-user-email")
+    join_parser.add_argument("--tmux-target")
+    join_parser.add_argument("--no-auto-prompt", action="store_true")
     join_parser.add_argument("session_command", nargs=argparse.REMAINDER)
 
     subparsers.add_parser("status")
 
     subparsers.add_parser("log")
 
-    ready_parser = subparsers.add_parser("ready")
-    ready_parser.add_argument("session")
+    sync_parser = subparsers.add_parser("sync")
+    sync_parser.add_argument("session")
+
+    return parser
+
+
+def build_recovery_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="coconut")
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("session")
@@ -42,6 +60,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    raw = sys.argv[1:] if argv is None else list(argv)
+    if raw and raw[0] in RECOVERY_COMMANDS:
+        return build_recovery_parser().parse_args(raw)
+    return build_parser().parse_args(raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
@@ -51,8 +76,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parse_args(argv)
 
     if args.command == "init":
         from .config import find_repo_root, init_config
@@ -88,11 +112,25 @@ def _main(argv: list[str] | None = None) -> int:
         validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
-        record = ensure_session_worktree(repo, config, db, args.name)
+        record = ensure_session_worktree(
+            repo,
+            config,
+            db,
+            args.name,
+            git_user_name=args.git_user_name,
+            git_user_email=args.git_user_email,
+        )
         command = args.session_command
         if command and command[0] == "--":
             command = command[1:]
-        agent = SessionAgent(repo=repo, config=config, record=record, command=command)
+        tmux_target = None if args.no_auto_prompt else args.tmux_target or os.environ.get("TMUX_PANE")
+        agent = SessionAgent(
+            repo=repo,
+            config=config,
+            record=record,
+            command=command,
+            tmux_target=tmux_target,
+        )
         control_thread = agent.start_control_server(wait=True)
         try:
             response = register_with_daemon(
@@ -131,9 +169,10 @@ def _main(argv: list[str] | None = None) -> int:
         initialize_schema(db)
         print(format_events(db), end="")
         return 0
-    if args.command == "ready":
+    if args.command == "sync":
         from .config import find_repo_root, load_config, validate_config
         from .protocol import decode_message
+        from .session import send_completion
         from .state import connect, get_session, initialize_schema
         from .transport import send_message
 
@@ -145,6 +184,13 @@ def _main(argv: list[str] | None = None) -> int:
         session = get_session(db, args.session)
         if session is None:
             raise RuntimeError(f"Unknown session: {args.session}")
+        if session.active_task is not None:
+            if session.state in {"fusing", "blocked", "recovery_required"}:
+                response = send_completion(repo / config.socket_path, session)
+                print(_format_sync_completion_response(response, session))
+                return 0 if response.get("type") == "ack" else 1
+            print(f"{args.session}: sync already in progress ({session.state})")
+            return 0
         socket_path = repo / config.socket_path
         if not socket_path.exists():
             raise RuntimeError("coconut daemon is not running")
@@ -157,13 +203,13 @@ def _main(argv: list[str] | None = None) -> int:
         if response.get("type") == "error":
             raise RuntimeError(response["message"])
         if response.get("type") == "queued" and response.get("session") == args.session:
-            print(f"Queued {args.session}")
+            print(f"Queued {args.session} for sync")
             return 0
         if response.get("type") == "ack" and response.get("session") == args.session:
-            message = response.get("message") or "no changes to integrate"
+            message = response.get("message") or "no changes to sync"
             print(f"{args.session}: {message}")
             return 0
-        raise RuntimeError("Unexpected ready response")
+        raise RuntimeError("Unexpected sync response")
     if args.command == "resume":
         from .config import find_repo_root, load_config
         from .state import (
@@ -191,7 +237,7 @@ def _main(argv: list[str] | None = None) -> int:
         }:
             raise RuntimeError(
                 f"Cannot resume {args.session} while integration lock is held; "
-                "retry done after resolving the task or abandon it"
+                "retry sync after resolving the task or abandon it"
             )
         transition_session(db, args.session, "queued", reason="manual resume", active_task=None)
         enqueue_session(db, args.session)
@@ -277,3 +323,18 @@ def _format_completion_response(response: dict, session, *, expected_type: str) 
     ):
         raise RuntimeError("Unexpected completion response")
     return f"{message_type} {response_session} {task_id}"
+
+
+def _format_sync_completion_response(response: dict, session) -> str:
+    if response.get("type") == "error":
+        raise RuntimeError(response["message"])
+    response_session = response.get("session")
+    task_id = response.get("task_id")
+    if response_session != session.name or task_id != session.active_task:
+        raise RuntimeError("Unexpected sync completion response")
+    if response.get("type") == "ack":
+        return f"Published {response_session} {task_id}"
+    if response.get("type") == "blocked":
+        reason = response.get("reason") or "blocked"
+        return f"Blocked {response_session} {task_id}: {reason}"
+    raise RuntimeError("Unexpected sync completion response")
