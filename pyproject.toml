@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "coconut"
 version = "0.1.0"
 description = "Serialized Codex collaboration for shared Git repositories"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
