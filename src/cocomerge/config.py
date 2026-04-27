@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 
-CONFIG_PATH = Path(".coconut/config.json")
+CONFIG_PATH = Path(".cocomerge/config.json")
 DEFAULT_DEVELOPER_COMMAND = ["codex"]
 
 
 @dataclass(frozen=True)
-class CoconutConfig:
+class CocomergeConfig:
     main_branch: str
     remote: str | None
     socket_path: str
@@ -36,7 +36,7 @@ def find_repo_root(start: Path | None = None) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
-def find_coconut_root(start: Path | None = None) -> Path:
+def find_cocomerge_root(start: Path | None = None) -> Path:
     cwd = Path.cwd() if start is None else start
     git_root = find_repo_root(cwd)
     candidates = [git_root, *git_root.parents]
@@ -48,7 +48,7 @@ def find_coconut_root(start: Path | None = None) -> Path:
     for candidate in candidates:
         if (candidate / CONFIG_PATH).exists():
             return candidate.resolve()
-    raise FileNotFoundError(f"{git_root / CONFIG_PATH} does not exist; run coconut init first")
+    raise FileNotFoundError(f"{git_root / CONFIG_PATH} does not exist; run cocomerge init first")
 
 
 def _git_common_dir(cwd: Path) -> Path | None:
@@ -72,52 +72,52 @@ def init_config(
     main_branch: str,
     remote: str | None,
     dirty_interval_s: float = 2.0,
-) -> CoconutConfig:
+) -> CocomergeConfig:
     _validate_main_branch(repo, main_branch)
     _validate_remote(repo, remote)
-    config = CoconutConfig(
+    config = CocomergeConfig(
         main_branch=main_branch,
         remote=remote,
-        socket_path=".coconut/coconut.sock",
-        worktree_root=".coconut/worktrees",
+        socket_path=".cocomerge/cocomerge.sock",
+        worktree_root=".cocomerge/worktrees",
         dirty_interval_s=dirty_interval_s,
         developers={},
     )
-    coconut_dir = repo / ".coconut"
-    coconut_dir.mkdir(exist_ok=True)
+    cocomerge_dir = repo / ".cocomerge"
+    cocomerge_dir.mkdir(exist_ok=True)
     (repo / CONFIG_PATH).write_text(
         json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (coconut_dir / "tasks").mkdir(exist_ok=True)
-    (coconut_dir / "worktrees").mkdir(exist_ok=True)
+    (cocomerge_dir / "tasks").mkdir(exist_ok=True)
+    (cocomerge_dir / "worktrees").mkdir(exist_ok=True)
     return config
 
 
-def load_config(repo: Path) -> CoconutConfig:
+def load_config(repo: Path) -> CocomergeConfig:
     path = repo / CONFIG_PATH
     if not path.exists():
-        raise FileNotFoundError(f"{path} does not exist; run coconut init first")
+        raise FileNotFoundError(f"{path} does not exist; run cocomerge init first")
     data = json.loads(path.read_text(encoding="utf-8"))
     data.pop("verify", None)
     data.setdefault("developers", {})
-    return CoconutConfig(**data)
+    return CocomergeConfig(**data)
 
 
-def validate_config(repo: Path, config: CoconutConfig) -> None:
+def validate_config(repo: Path, config: CocomergeConfig) -> None:
     _validate_main_branch(repo, config.main_branch)
     _validate_remote(repo, config.remote)
     _validate_developers(config.developers)
 
 
-def get_developer_identity(config: CoconutConfig, name: str) -> tuple[str, str]:
+def get_developer_identity(config: CocomergeConfig, name: str) -> tuple[str, str]:
     developer = _developer(config, name)
     user_name = _required_string(developer, "git_user_name", name)
     user_email = _required_string(developer, "git_user_email", name)
     return user_name, user_email
 
 
-def get_developer_command(config: CoconutConfig, name: str) -> list[str]:
+def get_developer_command(config: CocomergeConfig, name: str) -> list[str]:
     developer = _developer(config, name)
     command = developer.get("command", DEFAULT_DEVELOPER_COMMAND)
     if not isinstance(command, list) or not command or not all(
@@ -130,17 +130,17 @@ def get_developer_command(config: CoconutConfig, name: str) -> list[str]:
     return list(command)
 
 
-def has_developer(config: CoconutConfig, name: str) -> bool:
+def has_developer(config: CocomergeConfig, name: str) -> bool:
     return name in config.developers
 
 
-def _developer(config: CoconutConfig, name: str) -> dict[str, Any]:
+def _developer(config: CocomergeConfig, name: str) -> dict[str, Any]:
     try:
         developer = config.developers[name]
     except KeyError as exc:
         raise RuntimeError(
             f"Developer {name!r} is not configured in {CONFIG_PATH}. "
-            "Add it under the 'developers' object before running coconut join."
+            "Add it under the 'developers' object before running cocomerge join."
         ) from exc
     if not isinstance(developer, dict):
         raise RuntimeError(f"Developer {name!r} in {CONFIG_PATH} must be a JSON object")

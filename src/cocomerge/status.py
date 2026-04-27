@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .config import CoconutConfig
+from .config import CocomergeConfig
 from .git import current_head
 from .state import get_lock, list_events, list_queue, list_sessions
 
@@ -14,7 +14,7 @@ from .state import get_lock, list_events, list_queue, list_sessions
 def format_status(
     repo: Path,
     db: sqlite3.Connection,
-    config: CoconutConfig,
+    config: CocomergeConfig,
     *,
     now: Callable[[], float] = time.time,
 ) -> str:

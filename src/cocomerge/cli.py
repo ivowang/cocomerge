@@ -8,7 +8,7 @@ RECOVERY_COMMANDS = {"resume", "abandon", "done", "block"}
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="coconut")
+    parser = argparse.ArgumentParser(prog="cocomerge")
     subparsers = parser.add_subparsers(
         dest="command",
         metavar="{init,daemon,join,sync,status,log}",
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     join_parser.add_argument("--git-user-email", help=argparse.SUPPRESS)
     join_parser.add_argument(
         "--tmux-target",
-        help="tmux pane that should receive Coconut prompts; prompt injection is opt-in",
+        help="tmux pane that should receive Cocomerge prompts; prompt injection is opt-in",
     )
     join_parser.add_argument("--no-auto-prompt", action="store_true", help=argparse.SUPPRESS)
     join_parser.add_argument("session_command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_recovery_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="coconut")
+    parser = argparse.ArgumentParser(prog="cocomerge")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     resume_parser = subparsers.add_parser("resume")
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        print(f"coconut: {exc}", file=sys.stderr)
+        print(f"cocomerge: {exc}", file=sys.stderr)
         return 1
 
 
@@ -97,14 +97,14 @@ def _main(argv: list[str] | None = None) -> int:
         init_config(repo, main_branch=args.main, remote=args.remote)
         db = connect(repo)
         initialize_schema(db)
-        print(f"Initialized coconut in {repo / '.coconut'}")
+        print(f"Initialized cocomerge in {repo / '.cocomerge'}")
         return 0
     if args.command == "daemon":
-        from .config import find_coconut_root, load_config, validate_config
+        from .config import find_cocomerge_root, load_config, validate_config
         from .daemon import run_daemon
         from .state import connect, initialize_schema
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -115,7 +115,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         from .agent import SessionAgent
         from .config import (
-            find_coconut_root,
+            find_cocomerge_root,
             get_developer_command,
             get_developer_identity,
             has_developer,
@@ -125,7 +125,7 @@ def _main(argv: list[str] | None = None) -> int:
         from .session import ensure_session_worktree, prepare_join_startup_notice, register_with_daemon
         from .state import connect, initialize_schema
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -139,7 +139,7 @@ def _main(argv: list[str] | None = None) -> int:
             session_arg = None
         session_name = session_arg or args.name
         if session_name is None:
-            raise RuntimeError("Usage: coconut join <user_name>")
+            raise RuntimeError("Usage: cocomerge join <user_name>")
         if session_arg is not None and args.name is not None and session_arg != args.name:
             raise RuntimeError("join received two different session names")
         git_user_name = args.git_user_name
@@ -154,7 +154,7 @@ def _main(argv: list[str] | None = None) -> int:
                 command = get_developer_command(config, session_name)
         elif args.name is None:
             raise RuntimeError(
-                f"Developer {session_name!r} is not configured in .coconut/config.json"
+                f"Developer {session_name!r} is not configured in .cocomerge/config.json"
             )
         record = ensure_session_worktree(
             repo,
@@ -192,11 +192,11 @@ def _main(argv: list[str] | None = None) -> int:
             control_thread.join(timeout=2)
             raise
     if args.command == "status":
-        from .config import find_coconut_root, load_config, validate_config
+        from .config import find_cocomerge_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_status
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -204,24 +204,24 @@ def _main(argv: list[str] | None = None) -> int:
         print(format_status(repo, db, config), end="")
         return 0
     if args.command == "log":
-        from .config import find_coconut_root, load_config, validate_config
+        from .config import find_cocomerge_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_events
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         validate_config(repo, load_config(repo))
         db = connect(repo)
         initialize_schema(db)
         print(format_events(db), end="")
         return 0
     if args.command == "sync":
-        from .config import find_coconut_root, load_config, validate_config
+        from .config import find_cocomerge_root, load_config, validate_config
         from .protocol import decode_message
         from .session import infer_session_from_cwd, send_completion
         from .state import connect, get_session, initialize_schema
         from .transport import send_message
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -245,7 +245,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 0
         socket_path = repo / config.socket_path
         if not socket_path.exists():
-            raise RuntimeError("coconut daemon is not running")
+            raise RuntimeError("cocomerge daemon is not running")
         raw = send_message(
             socket_path,
             {"type": "ready_to_integrate", "session": session.name},
@@ -266,7 +266,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 0
         raise RuntimeError("Unexpected sync response")
     if args.command == "resume":
-        from .config import find_coconut_root, load_config
+        from .config import find_cocomerge_root, load_config
         from .state import (
             connect,
             enqueue_session,
@@ -276,7 +276,7 @@ def _main(argv: list[str] | None = None) -> int:
             transition_session,
         )
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -299,7 +299,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Resumed {args.session}")
         return 0
     if args.command == "abandon":
-        from .config import find_coconut_root, load_config
+        from .config import find_cocomerge_root, load_config
         from .state import (
             connect,
             dequeue_session,
@@ -310,7 +310,7 @@ def _main(argv: list[str] | None = None) -> int:
             transition_session,
         )
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -328,11 +328,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Abandoned {args.session}")
         return 0
     if args.command == "done":
-        from .config import find_coconut_root, load_config
+        from .config import find_cocomerge_root, load_config
         from .session import send_completion
         from .state import connect, get_session, initialize_schema
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         config = load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -343,11 +343,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(_format_completion_response(response, session, expected_type="ack"))
         return 0
     if args.command == "block":
-        from .config import find_coconut_root, load_config
+        from .config import find_cocomerge_root, load_config
         from .session import send_completion
         from .state import connect, get_session, initialize_schema
 
-        repo = find_coconut_root()
+        repo = find_cocomerge_root()
         config = load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -403,7 +403,7 @@ def _sync_remote_best_effort(repo, config) -> str | None:
         return None
     return (
         f"remote sync to {config.remote} failed and was skipped; "
-        f"will retry on the next coconut sync: {error}"
+        f"will retry on the next cocomerge sync: {error}"
     )
 
 
@@ -413,4 +413,4 @@ def _print_remote_sync_errors(errors: list[str | None]) -> None:
         if error is None or error in seen:
             continue
         seen.add(error)
-        print(f"coconut: warning: {error}", file=sys.stderr)
+        print(f"cocomerge: warning: {error}", file=sys.stderr)

@@ -1,27 +1,27 @@
-# Coconut Developer Guide
+# Cocomerge Developer Guide
 
-This document explains Coconut's implementation model for maintainers. The
+This document explains Cocomerge's implementation model for maintainers. The
 user-facing workflow is documented in the root [README.md](../README.md).
 
 ## Architecture
 
-Coconut is a single-machine orchestration layer around Git and Codex. Its main
+Cocomerge is a single-machine orchestration layer around Git and Codex. Its main
 parts are:
 
-- CLI commands in `src/coconut/cli.py`.
-- Persistent state in `src/coconut/state.py`, backed by SQLite under
-  `.coconut/state.sqlite`.
-- Daemon orchestration in `src/coconut/daemon.py`.
-- Session-side cooperation in `src/coconut/agent.py`.
-- Session worktree setup in `src/coconut/session.py`, including generated
-  Coconut guidance for Codex and per-worktree Git identity configuration.
+- CLI commands in `src/cocomerge/cli.py`.
+- Persistent state in `src/cocomerge/state.py`, backed by SQLite under
+  `.cocomerge/state.sqlite`.
+- Daemon orchestration in `src/cocomerge/daemon.py`.
+- Session-side cooperation in `src/cocomerge/agent.py`.
+- Session worktree setup in `src/cocomerge/session.py`, including generated
+  Cocomerge guidance for Codex and per-worktree Git identity configuration.
 
 The daemon and session agents communicate over Unix domain sockets with JSONL
 messages. Git operations are delegated to the Git CLI through helpers in
-`src/coconut/git.py`.
+`src/cocomerge/git.py`.
 
 `SessionAgent` can paste sync prompts into tmux, but only when `join` receives
-an explicit `--tmux-target`. Coconut deliberately does not auto-detect
+an explicit `--tmux-target`. Cocomerge deliberately does not auto-detect
 `TMUX_PANE`: tests, wrapper scripts, and nested shells can inherit that
 environment variable from the wrong Codex. On `start_fusion`, the agent always
 writes a prompt file next to the task file and prints both paths; if a target
@@ -30,10 +30,10 @@ was configured, it also uses `tmux load-buffer`, `paste-buffer`, and
 
 ## Configuration
 
-`coconut init` writes `.coconut/config.json` through `init_config()` in
-`src/coconut/config.py`. The public config schema is:
+`cocomerge init` writes `.cocomerge/config.json` through `init_config()` in
+`src/cocomerge/config.py`. The public config schema is:
 
-- `main_branch`: local branch Coconut is allowed to publish.
+- `main_branch`: local branch Cocomerge is allowed to publish.
 - `remote`: optional remote name for best-effort server-ref sync.
 - `socket_path`: daemon Unix socket path.
 - `worktree_root`: root for managed session worktrees.
@@ -41,19 +41,19 @@ was configured, it also uses `tmux load-buffer`, `paste-buffer`, and
 - `developers`: object keyed by developer/session name.
 
 Each developer entry must provide `git_user_name` and `git_user_email` before
-that developer can use `coconut join <name>`. The optional `command` field is a
+that developer can use `cocomerge join <name>`. The optional `command` field is a
 non-empty JSON string array and defaults to `["codex"]`. `validate_config()`
 checks remote existence, main branch existence, developer object shape, and
 custom command shape. Identity fields are required by `join`, not at daemon
 startup, so operators can add developers incrementally.
 
-`load_config()` discards the legacy `verify` key if present. Coconut no longer
+`load_config()` discards the legacy `verify` key if present. Cocomerge no longer
 stores a repo-wide verification command: the generated sync task requires the
 owning Codex to design and run suitable validation for that semantic merge.
 
 ## Product Command Model
 
-The normal developer command is `coconut sync`, run from inside the managed
+The normal developer command is `cocomerge sync`, run from inside the managed
 worktree. The CLI infers the session by matching the current Git worktree root
 against registered `SessionRecord.worktree` values. A session argument remains
 available for operator/internal use from the main repository.
@@ -69,7 +69,7 @@ Internally, `sync` maps to different protocol actions:
 Before the protocol action, and again after successful local catch-up or
 publish paths, the CLI attempts a best-effort remote sync when `config.remote`
 is set. This force-pushes/prunes local `refs/heads/*` to the remote and also
-pushes Coconut's internal `refs/coconut/*` namespace when it exists. Failures
+pushes Cocomerge's internal `refs/cocomerge/*` namespace when it exists. Failures
 or timeouts only produce warnings; they must not change the sync exit status.
 
 Legacy/internal commands such as `done`, `block`, `resume`, and `abandon` are
@@ -79,16 +79,16 @@ developer workflow.
 The daemon does not automatically queue dirty sessions. Dirty work stays local
 until the owning session explicitly runs `sync`.
 
-`join <name>` resolves the developer from `config.developers[name]`. Coconut
+`join <name>` resolves the developer from `config.developers[name]`. Cocomerge
 uses that entry's `git_user_name` and `git_user_email`, enables Git
 `extensions.worktreeConfig`, and writes `user.name`/`user.email` with
 `git config --worktree`, so each developer's managed worktree can commit with a
 distinct identity under the shared server account. If the entry has no
-`command`, Coconut starts `codex`; otherwise it uses the configured JSON string
+`command`, Cocomerge starts `codex`; otherwise it uses the configured JSON string
 array. Legacy `--name` and `--git-user-*` flags remain as compatibility hooks
 but are not part of the user workflow.
 
-On every `join`, Coconut calls `prepare_join_startup_notice()` before launching
+On every `join`, Cocomerge calls `prepare_join_startup_notice()` before launching
 the session command. This makes restart behavior explicit:
 
 - active tasks are re-announced with task and validation paths;
@@ -104,20 +104,20 @@ explicit tmux target was configured, it also pastes the notice into that pane.
 ## Generated Session Instructions
 
 `ensure_session_worktree()` writes an `AGENTS.md` file into each managed
-worktree. The file tells Codex that it is working inside a Coconut session and
-that normal collaboration uses `coconut sync` from inside that worktree.
+worktree. The file tells Codex that it is working inside a Cocomerge session and
+that normal collaboration uses `cocomerge sync` from inside that worktree.
 
-The generated file must not create integration work by itself. Coconut adds
+The generated file must not create integration work by itself. Cocomerge adds
 `/AGENTS.md` to the repository's local `.git/info/exclude` before writing it,
 so Git status, snapshots, and `git add -A` ignore the file. If the project
-already has its own `AGENTS.md`, Coconut leaves it untouched.
+already has its own `AGENTS.md`, Cocomerge leaves it untouched.
 
 ## State Model
 
 Each session is represented by a `SessionRecord`:
 
 - `name`: stable session id, such as `alice`.
-- `branch`: managed session branch, usually `coconut/<name>`.
+- `branch`: managed session branch, usually `cocomerge/<name>`.
 - `worktree`: path to the managed Git worktree.
 - `state`: lifecycle state.
 - `last_seen_main`: last main commit known to be reflected in the session.
@@ -147,11 +147,11 @@ Important states:
 - `snapshot`: the daemon is preparing a snapshot.
 - `frozen`: the session acknowledged freeze.
 - `fusing`: the owning Codex is applying the snapshot on top of latest `main`.
-- `verifying`: Coconut is validating the candidate.
-- `publishing`: Coconut is moving `main` and optionally pushing remote.
+- `verifying`: Cocomerge is validating the candidate.
+- `publishing`: Cocomerge is moving `main` and optionally pushing remote.
 - `blocked`: the active sync task needs the same session to fix and rerun
   `sync`, or an operator to inspect it.
-- `recovery_required`: Coconut stopped because continuing automatically could
+- `recovery_required`: Cocomerge stopped because continuing automatically could
   lose work or mis-publish state.
 - `abandoned`: the session task was manually abandoned.
 
@@ -162,8 +162,8 @@ Session to daemon:
 - `register`: attach a session agent and runtime metadata.
 - `heartbeat`: keep the session connected.
 - `shutdown`: mark the session disconnected.
-- `ready_to_integrate`: internal queue request used by `coconut sync`.
-- `fusion_done`: internal candidate-ready signal used by `coconut sync`.
+- `ready_to_integrate`: internal queue request used by `cocomerge sync`.
+- `fusion_done`: internal candidate-ready signal used by `cocomerge sync`.
 - `fusion_blocked`: legacy/internal block signal.
 
 Daemon to session:
@@ -173,8 +173,8 @@ Daemon to session:
 - `start_fusion`: tell the agent to show the generated task file path.
 - `main_updated`: notify the session that local `main` advanced.
 
-`src/coconut/protocol.py` validates message shape, and
-`src/coconut/transport.py` implements JSONL socket transport.
+`src/cocomerge/protocol.py` validates message shape, and
+`src/cocomerge/transport.py` implements JSONL socket transport.
 
 ## Queue and Integration Flow
 
@@ -186,13 +186,13 @@ The daemon loop performs:
 
 `process_queue_once()` only starts a task if the integration lock is free. It
 claims the lock and active task together, sends `freeze`, prepares the snapshot,
-stores snapshot/base refs under `refs/coconut/`, resets the session worktree to
+stores snapshot/base refs under `refs/cocomerge/`, resets the session worktree to
 latest `main`, writes a task file, then sends `start_fusion`.
 
-The task file is created by `src/coconut/tasks.py`. It includes the snapshot
+The task file is created by `src/cocomerge/tasks.py`. It includes the snapshot
 commit, latest main, last seen main, diff summary, interruption-handling
 guidance, validation-report requirements, and the instruction to run
-`coconut sync` again from the same worktree after committing the candidate.
+`cocomerge sync` again from the same worktree after committing the candidate.
 
 ## Publishing Flow
 
@@ -213,13 +213,13 @@ It checks:
 - validation did not coincide with `HEAD` changes or dirty the worktree;
 - local `main` can fast-forward to the candidate.
 
-After local publish, Coconut records `last_observed_main`, marks the session
+After local publish, Cocomerge records `last_observed_main`, marks the session
 clean, releases the lock, fast-forwards clean idle sessions, and broadcasts the
-main update. If a remote is configured, Coconut then attempts a best-effort
-server-ref sync. Remote failure after local publish is non-fatal: Coconut
+main update. If a remote is configured, Cocomerge then attempts a best-effort
+server-ref sync. Remote failure after local publish is non-fatal: Cocomerge
 records a `remote_sync_failed` event and retries on later `sync` commands.
 
-On successful publish, Coconut:
+On successful publish, Cocomerge:
 
 1. marks the session clean;
 2. updates `last_seen_main`;
@@ -229,7 +229,7 @@ On successful publish, Coconut:
 
 ## Recovery Semantics
 
-Coconut deliberately stops rather than guessing.
+Cocomerge deliberately stops rather than guessing.
 
 Heartbeat timeout:
 
@@ -246,9 +246,9 @@ Startup recovery:
 External main detection:
 
 - compares local `main` against `last_observed_main`;
-- if `main` moved outside Coconut, dirty/queued/active integration sessions
+- if `main` moved outside Cocomerge, dirty/queued/active integration sessions
   become `recovery_required`;
-- pending Coconut-owned local publish recovery is not misclassified as external
+- pending Cocomerge-owned local publish recovery is not misclassified as external
   movement when local `main` equals the locked session candidate.
 
 Manual recovery commands are intentionally operator-only.
@@ -263,13 +263,13 @@ Useful local checks when the validation suite is present:
 
 ```bash
 pytest -q
-PYTHONPATH=src python3 -m coconut --help
+PYTHONPATH=src python3 -m cocomerge --help
 git diff --check HEAD
 ```
 
 Before publishing, verify that the public tree contains only:
 
-- `src/coconut/`;
+- `src/cocomerge/`;
 - `pyproject.toml`;
 - `setup.py`;
 - `README.md`;
@@ -278,5 +278,5 @@ Before publishing, verify that the public tree contains only:
 - `docs/DEV_ZH.md`;
 - supporting project metadata such as `.gitignore`.
 
-Do not publish `.coconut/`, `.pytest_cache/`, `__pycache__/`, internal planning
+Do not publish `.cocomerge/`, `.pytest_cache/`, `__pycache__/`, internal planning
 documents, or the implementation test suite unless the release policy changes.
