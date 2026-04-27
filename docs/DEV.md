@@ -273,11 +273,43 @@ PYTHONPATH=src python3 -m cocomerge --help
 git diff --check HEAD
 ```
 
+## PyPI Release
+
+Cocomerge uses `pyproject.toml` as the single packaging metadata source. Do not
+add version or package metadata back to `setup.py`; there is no `setup.py` in
+the release tree.
+
+Publishing is handled by `.github/workflows/release.yml`. The workflow runs when
+a `v*.*.*` tag is pushed. It builds the wheel and sdist, checks them with
+`twine`, verifies that the tag version matches `project.version`, and publishes
+to PyPI through Trusted Publishing. No PyPI API token should be stored in GitHub
+Secrets for the normal release path.
+
+Release steps:
+
+```bash
+# edit pyproject.toml project.version first
+python -m pip install --upgrade build twine
+rm -rf dist build *.egg-info src/*.egg-info
+python -m build
+python -m twine check --strict dist/*
+git add pyproject.toml
+git commit -m "Release 0.1.1"
+git tag v0.1.1
+git push origin main
+git push origin v0.1.1
+```
+
+The first release requires a PyPI project or pending publisher for project
+`cocomerge`, repository `ivowang/cocomerge`, workflow `release.yml`, and
+environment `pypi`.
+
 Before publishing, verify that the public tree contains only:
 
 - `src/cocomerge/`;
+- `.github/workflows/release.yml`;
+- `MANIFEST.in`;
 - `pyproject.toml`;
-- `setup.py`;
 - `README.md`;
 - `docs/README_ZH.md`;
 - `docs/DEV.md`;

@@ -29,5 +29,8 @@ cocomerge = "cocomerge.cli:main"
 Repository = "https://github.com/ivowang/cocomerge"
 Issues = "https://github.com/ivowang/cocomerge/issues"
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
 [tool.setuptools.packages.find]
 where = ["src"]

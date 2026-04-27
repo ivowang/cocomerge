@@ -202,11 +202,35 @@ PYTHONPATH=src python3 -m cocomerge --help
 git diff --check HEAD
 ```
 
+## PyPI 发布
+
+Cocomerge 使用 `pyproject.toml` 作为唯一 packaging metadata 来源。不要再把版本号或包 metadata 写回 `setup.py`；发布树中没有 `setup.py`。
+
+发布由 `.github/workflows/release.yml` 处理。workflow 在推送 `v*.*.*` tag 时运行：构建 wheel 和 sdist，用 `twine` 检查，确认 tag 版本与 `project.version` 一致，然后通过 PyPI Trusted Publishing 发布到 PyPI。正常发布路径不需要在 GitHub Secrets 中保存 PyPI API token。
+
+发布步骤：
+
+```bash
+# 先修改 pyproject.toml 的 project.version
+python -m pip install --upgrade build twine
+rm -rf dist build *.egg-info src/*.egg-info
+python -m build
+python -m twine check --strict dist/*
+git add pyproject.toml
+git commit -m "Release 0.1.1"
+git tag v0.1.1
+git push origin main
+git push origin v0.1.1
+```
+
+第一次发布前，需要在 PyPI 上为项目 `cocomerge` 配置项目或 pending publisher：repository 填 `ivowang/cocomerge`，workflow 填 `release.yml`，environment 填 `pypi`。
+
 发布前确认公开树只包含：
 
 - `src/cocomerge/`；
+- `.github/workflows/release.yml`；
+- `MANIFEST.in`；
 - `pyproject.toml`；
-- `setup.py`；
 - `README.md`；
 - `docs/README_ZH.md`；
 - `docs/DEV.md`；

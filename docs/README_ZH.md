@@ -57,7 +57,13 @@ cocomerge log
 
 ## 安装
 
-在 Cocomerge 仓库根目录执行：
+第一次发布到 PyPI 后，可以直接安装：
+
+```bash
+pip install cocomerge
+```
+
+如果是在本地 checkout 中开发 Cocomerge 本身，执行：
 
 ```bash
 pip install -e .

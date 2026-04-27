@@ -65,7 +65,13 @@ part of the normal developer workflow.
 
 ## Installation
 
-From the Cocomerge repository root:
+After the first PyPI release:
+
+```bash
+pip install cocomerge
+```
+
+For development from a local checkout:
 
 ```bash
 pip install -e .
