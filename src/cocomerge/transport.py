@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import errno
 import socket
+import stat
 import threading
 from pathlib import Path
 from typing import Callable
@@ -39,7 +41,8 @@ def send_message(socket_path: Path, message: dict, *, timeout: float | None = No
 
 
 def serve_once(socket_path: Path, handler: Handler) -> threading.Thread:
-    return threading.Thread(target=_serve_once, args=(socket_path, handler), daemon=True)
+    server = _listening_socket(socket_path)
+    return threading.Thread(target=_serve_once, args=(server, socket_path, handler), daemon=True)
 
 
 def serve_forever(
@@ -49,15 +52,16 @@ def serve_forever(
     stop_event: threading.Event | None = None,
 ) -> threading.Thread:
     event = threading.Event() if stop_event is None else stop_event
+    server = _listening_socket(socket_path)
     return threading.Thread(
         target=_serve_forever,
-        args=(socket_path, handler, event),
+        args=(server, socket_path, handler, event),
         daemon=True,
     )
 
 
-def _serve_once(socket_path: Path, handler: Handler) -> None:
-    with _listening_socket(socket_path) as server:
+def _serve_once(server: socket.socket, socket_path: Path, handler: Handler) -> None:
+    with server:
         try:
             conn, _ = server.accept()
             with conn:
@@ -67,11 +71,12 @@ def _serve_once(socket_path: Path, handler: Handler) -> None:
 
 
 def _serve_forever(
+    server: socket.socket,
     socket_path: Path,
     handler: Handler,
     stop_event: threading.Event,
 ) -> None:
-    with _listening_socket(socket_path) as server:
+    with server:
         server.settimeout(0.1)
         try:
             while not stop_event.is_set():
@@ -90,8 +95,7 @@ def _serve_forever(
 
 
 def _listening_socket(socket_path: Path) -> socket.socket:
-    socket_path.parent.mkdir(parents=True, exist_ok=True)
-    _unlink_socket(socket_path)
+    prepare_socket_path(socket_path)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(str(socket_path))
@@ -115,6 +119,37 @@ def _handle_connection(conn: socket.socket, handler: Handler) -> None:
 def _error_response(exc: Exception) -> dict[str, str]:
     message = str(exc).strip().splitlines()[0] if str(exc).strip() else "request failed"
     return {"type": "error", "message": message[:200]}
+
+
+def prepare_socket_path(socket_path: Path) -> None:
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    _unlink_stale_socket(socket_path)
+
+
+def _unlink_stale_socket(socket_path: Path) -> None:
+    try:
+        mode = socket_path.stat().st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(mode):
+        raise RuntimeError(f"socket path exists and is not a socket: {socket_path}")
+    if _socket_accepts_connections(socket_path):
+        raise RuntimeError(f"cocomerge daemon is already running at {socket_path}")
+    _unlink_socket(socket_path)
+
+
+def _socket_accepts_connections(socket_path: Path) -> bool:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(0.2)
+            client.connect(str(socket_path))
+            return True
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout):
+        return False
+    except OSError as exc:
+        if exc.errno in {errno.ENOENT, errno.ECONNREFUSED}:
+            return False
+        raise
 
 
 def _unlink_socket(socket_path: Path) -> None:

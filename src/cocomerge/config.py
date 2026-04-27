@@ -72,7 +72,14 @@ def init_config(
     main_branch: str,
     remote: str | None,
     dirty_interval_s: float = 2.0,
+    force: bool = False,
 ) -> CocomergeConfig:
+    path = repo / CONFIG_PATH
+    if path.exists() and not force:
+        raise RuntimeError(
+            f"{path} already exists. Cocomerge init refuses to overwrite existing "
+            "developer configuration; pass --force only if you intend to replace it."
+        )
     _validate_main_branch(repo, main_branch)
     _validate_remote(repo, remote)
     config = CocomergeConfig(
@@ -85,10 +92,7 @@ def init_config(
     )
     cocomerge_dir = repo / ".cocomerge"
     cocomerge_dir.mkdir(exist_ok=True)
-    (repo / CONFIG_PATH).write_text(
-        json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    _write_config_atomic(path, config)
     (cocomerge_dir / "tasks").mkdir(exist_ok=True)
     (cocomerge_dir / "worktrees").mkdir(exist_ok=True)
     return config
@@ -108,6 +112,15 @@ def validate_config(repo: Path, config: CocomergeConfig) -> None:
     _validate_main_branch(repo, config.main_branch)
     _validate_remote(repo, config.remote)
     _validate_developers(config.developers)
+
+
+def _write_config_atomic(path: Path, config: CocomergeConfig) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(
+        json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    tmp_path.replace(path)
 
 
 def get_developer_identity(config: CocomergeConfig, name: str) -> tuple[str, str]:

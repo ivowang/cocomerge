@@ -29,6 +29,8 @@ daemon 和 session agent 通过 Unix domain socket 传输 JSONL 消息。Git 操
 
 每个 developer entry 必须提供 `git_user_name` 和 `git_user_email`，之后该开发者才能执行 `cocomerge join <name>`。可选的 `command` 字段必须是非空 JSON 字符串数组，默认值是 `["codex"]`。`validate_config()` 会检查 remote 是否存在、main branch 是否存在、developer object 形状以及自定义 command 形状。identity 字段由 `join` 要求，而不是 daemon 启动时强制要求，因此 operator 可以逐步添加开发者。
 
+`init_config()` 默认拒绝覆盖已有配置，除非 `cocomerge init --force` 传入 `force=True`。配置写入使用临时文件加 atomic replace，避免写入失败后留下半截 JSON。
+
 `load_config()` 会丢弃历史 `verify` key。Cocomerge 不再保存 repo-wide verification command：生成的 sync task 会要求拥有该任务的 Codex 为这次语义融合自行设计并执行合适验证。
 
 ## 产品命令模型

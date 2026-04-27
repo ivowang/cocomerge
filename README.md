@@ -99,6 +99,11 @@ Initialize Cocomerge once:
 cocomerge init --main main --remote origin
 ```
 
+`init` refuses to overwrite an existing `.cocomerge/config.json`, because that
+file contains developer identities and launch commands. Use `cocomerge init
+--force` only when you intentionally want to replace the existing Cocomerge
+configuration.
+
 Use `--remote origin` only if that remote exists. With a remote configured,
 `cocomerge sync` force-pushes local branch refs to that remote with pruning, so
 the server-side repository remains authoritative. Omit `--remote` for

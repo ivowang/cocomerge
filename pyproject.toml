@@ -6,11 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "cocomerge"
 version = "0.1.0"
 description = "Serialized Codex collaboration for shared Git repositories"
+readme = "README.md"
 requires-python = ">=3.10"
+authors = [{ name = "Cocomerge contributors" }]
+keywords = ["codex", "git", "collaboration", "merge", "worktree"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Version Control :: Git",
+]
 dependencies = []
 
 [project.scripts]
 cocomerge = "cocomerge.cli:main"
+
+[project.urls]
+Repository = "https://github.com/ivowang/cocomerge"
+Issues = "https://github.com/ivowang/cocomerge/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

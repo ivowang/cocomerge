@@ -89,6 +89,8 @@ git remote add origin <url>
 cocomerge init --main main --remote origin
 ```
 
+`init` 默认拒绝覆盖已有 `.cocomerge/config.json`，因为这个文件里有开发者 identity 和启动命令。只有在明确想替换现有 Cocomerge 配置时，才使用 `cocomerge init --force`。
+
 只有当 `origin` 已经存在时才使用 `--remote origin`。配置 remote 后，`cocomerge sync` 会用 force-push/prune 的方式把本地 branch refs 同步到该 remote，因此以 server 上的仓库为权威状态。如果只需要本地协调，可以省略 `--remote`。
 
 开发者 join 之前，编辑 `.cocomerge/config.json`，填好顶层 `developers` 对象。保留 `cocomerge init` 写入的其他 key，不要只用 developer 片段覆盖整个文件。一个典型配置如下：

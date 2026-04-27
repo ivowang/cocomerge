@@ -18,6 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser = subparsers.add_parser("init")
     init_parser.add_argument("--main", default="main")
     init_parser.add_argument("--remote")
+    init_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="replace an existing .cocomerge/config.json",
+    )
 
     subparsers.add_parser("daemon")
 
@@ -94,7 +99,7 @@ def _main(argv: list[str] | None = None) -> int:
         from .state import connect, initialize_schema
 
         repo = find_repo_root()
-        init_config(repo, main_branch=args.main, remote=args.remote)
+        init_config(repo, main_branch=args.main, remote=args.remote, force=args.force)
         db = connect(repo)
         initialize_schema(db)
         print(f"Initialized cocomerge in {repo / '.cocomerge'}")

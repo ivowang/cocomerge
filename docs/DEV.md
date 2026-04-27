@@ -47,6 +47,10 @@ checks remote existence, main branch existence, developer object shape, and
 custom command shape. Identity fields are required by `join`, not at daemon
 startup, so operators can add developers incrementally.
 
+`init_config()` refuses to overwrite an existing config unless `force=True`
+from `cocomerge init --force`. Config writes use a temporary file followed by
+atomic replace so a failed write does not leave a partially written JSON file.
+
 `load_config()` discards the legacy `verify` key if present. Cocomerge no longer
 stores a repo-wide verification command: the generated sync task requires the
 owning Codex to design and run suitable validation for that semantic merge.
