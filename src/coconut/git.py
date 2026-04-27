@@ -8,18 +8,30 @@ class GitError(RuntimeError):
     pass
 
 
-def run_git(repo: Path, args: list[str], *, check: bool = True) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+def run_git(
+    repo: Path,
+    args: list[str],
+    *,
+    check: bool = True,
+    timeout: float | None = None,
+) -> str:
+    command = ["git", *args]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        display = " ".join(command)
+        raise GitError(f"{display} timed out after {timeout:g}s") from exc
     if check and result.returncode != 0:
-        command = "git " + " ".join(args)
-        raise GitError(f"{command} failed with {result.returncode}: {result.stderr.strip()}")
+        display = " ".join(command)
+        raise GitError(f"{display} failed with {result.returncode}: {result.stderr.strip()}")
     return result.stdout.strip()
 
 
@@ -86,6 +98,45 @@ def push_ref(repo: Path, remote: str, source: str, dest: str) -> None:
 
 def push(repo: Path, remote: str, ref: str) -> None:
     push_ref(repo, remote, ref, ref)
+
+
+def force_push_server_refs(repo: Path, remote: str, *, timeout: float = 30.0) -> None:
+    run_git(
+        repo,
+        ["push", "--force", "--prune", remote, "+refs/heads/*:refs/heads/*"],
+        timeout=timeout,
+    )
+    if _has_refs(repo, "refs/coconut"):
+        run_git(
+            repo,
+            ["push", "--force", remote, "+refs/coconut/*:refs/coconut/*"],
+            timeout=timeout,
+        )
+
+
+def try_force_push_server_refs(
+    repo: Path,
+    remote: str | None,
+    *,
+    timeout: float = 30.0,
+) -> str | None:
+    if remote is None:
+        return None
+    try:
+        force_push_server_refs(repo, remote, timeout=timeout)
+    except Exception as exc:
+        return str(exc)
+    return None
+
+
+def _has_refs(repo: Path, namespace: str) -> bool:
+    return bool(
+        run_git(
+            repo,
+            ["for-each-ref", "--format=%(refname)", namespace],
+            check=False,
+        )
+    )
 
 
 def add_all(repo: Path) -> None:

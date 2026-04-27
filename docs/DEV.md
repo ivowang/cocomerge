@@ -43,6 +43,12 @@ Internally, `sync` maps to different protocol actions:
 - retryable remote publish recovery: report `fusion_done` again to retry the
   publish path.
 
+Before the protocol action, and again after successful local catch-up or
+publish paths, the CLI attempts a best-effort remote sync when `config.remote`
+is set. This force-pushes/prunes local `refs/heads/*` to the remote and also
+pushes Coconut's internal `refs/coconut/*` namespace when it exists. Failures
+or timeouts only produce warnings; they must not change the sync exit status.
+
 Legacy/internal commands such as `done`, `block`, `resume`, and `abandon` are
 operator or compatibility tools. They are intentionally not part of the normal
 developer workflow.
@@ -157,7 +163,8 @@ It checks:
 
 - session and task id match;
 - integration lock is owned by the same session/task;
-- recovery retry is limited to remote-push or startup-publishing recovery;
+- recovery retry is limited to legacy remote-push recovery or
+  startup-publishing recovery;
 - worktree has no unsafe Git operation;
 - reported candidate equals session `HEAD`;
 - candidate is not the task base commit, unless Codex created an explicit
@@ -167,11 +174,11 @@ It checks:
 - verification did not modify `HEAD` or dirty the worktree;
 - local `main` can fast-forward to the candidate.
 
-After local publish, Coconut records `last_observed_main` before releasing the
-lock. If a remote is configured, Coconut then pushes the candidate. Remote
-failure after local publish is conservative: the session enters
-`recovery_required`, the lock stays held, and `sync` can retry after the remote
-issue is fixed.
+After local publish, Coconut records `last_observed_main`, marks the session
+clean, releases the lock, fast-forwards clean idle sessions, and broadcasts the
+main update. If a remote is configured, Coconut then attempts a best-effort
+server-ref sync. Remote failure after local publish is non-fatal: Coconut
+records a `remote_sync_failed` event and retries on later `sync` commands.
 
 On successful publish, Coconut:
 

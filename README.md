@@ -25,6 +25,12 @@ state." Depending on the session state, it can:
 Developers and Codex sessions must not run `git pull main`, `git merge main`,
 or `git push main` directly. Coconut is the only writer to local `main`.
 
+If a remote is configured, every `coconut sync` also tries to force-sync the
+server's local branch refs to that remote. The server is treated as the source
+of truth; remote branch differences may be overwritten. Remote sync is
+best-effort: network or authentication failures are reported as warnings and
+retried on later `coconut sync` commands.
+
 The daemon does not automatically integrate dirty sessions. Local work stays in
 the developer's managed worktree until that developer or their Codex explicitly
 runs `coconut sync` from inside that worktree. In Codex, run it as a shell
@@ -82,8 +88,8 @@ git add .
 git commit -m "initial commit"
 ```
 
-If Coconut should push a remote after publishing local `main`, add the remote
-before initialization:
+If Coconut should keep a remote copy of the server's local branches, add the
+remote before initialization:
 
 ```bash
 git remote add origin <url>
@@ -95,8 +101,10 @@ Initialize Coconut once:
 coconut init --main main --verify "pytest" --remote origin
 ```
 
-Use `--remote origin` only if that remote exists. Omit `--remote` for local-only
-coordination.
+Use `--remote origin` only if that remote exists. With a remote configured,
+`coconut sync` force-pushes local branch refs to that remote with pruning, so
+the server-side repository remains authoritative. Omit `--remote` for
+local-only coordination.
 
 ## Starting Codex Sessions
 
@@ -190,8 +198,8 @@ candidate and the worktree is clean, it runs the same command again:
 coconut sync
 ```
 
-Coconut then verifies the candidate, fast-forwards local `main`, pushes the
-configured remote if one exists, and notifies other sessions.
+Coconut then verifies the candidate, fast-forwards local `main`, best-effort
+syncs the configured remote if one exists, and notifies other sessions.
 
 If the task cannot be completed safely, Codex should stop and explain the
 blocker in its session output. An operator can inspect `coconut status` and
@@ -242,8 +250,8 @@ Coconut prefers stopping over guessing:
 - running `sync` before committing a task candidate is rejected;
 - verification failures keep the task locked so the same session can fix and
   run `sync` again;
-- remote push failures keep the task locked so `sync` can retry after the
-  remote issue is fixed;
+- remote sync failures do not block local progress; Coconut warns and retries
+  on the next `sync`;
 - unexpected recovery states require operator inspection.
 
 ## Command Reference

@@ -32,6 +32,8 @@ coconut sync
 - active task 处于 `fusing` 或可重试 `blocked`：通过 `fusion_done` 报告当前 session `HEAD` 是 candidate，让 daemon 验证和发布；
 - 可重试 remote publish recovery：再次通过 `fusion_done` 重试 publish 路径。
 
+执行协议动作前，以及本地 catch-up 或 publish 成功后，CLI 会在配置了 `config.remote` 时尝试 best-effort remote sync。该操作会 force-push/prune 本地 `refs/heads/*` 到 remote；如果存在 Coconut 内部 `refs/coconut/*` namespace，也会一并推送。失败或超时只打印 warning，不应改变 `sync` 的退出状态。
+
 `done`、`block`、`resume`、`abandon` 等 legacy/internal 命令只面向 operator 或兼容场景，不属于普通开发者工作流。
 
 daemon 不会自动把 dirty session 入队。dirty work 会留在本地，直到 owner 显式运行 `sync`。
@@ -121,7 +123,7 @@ active-task `sync` 会触发 `publish_candidate()`。
 
 - session 和 task id 匹配；
 - integration lock 属于同一个 session/task；
-- recovery retry 只限 remote-push 或 startup-publishing recovery；
+- recovery retry 只限历史 remote-push recovery 或 startup-publishing recovery；
 - worktree 没有未完成的危险 Git 操作；
 - candidate 等于 session `HEAD`；
 - candidate 不是 task base commit，除非 Codex 创建了显式 no-op commit；
@@ -130,7 +132,7 @@ active-task `sync` 会触发 `publish_candidate()`。
 - verification 没有改变 `HEAD` 或弄脏 worktree；
 - 本地 `main` 可以 fast-forward 到 candidate。
 
-本地 publish 后，Coconut 会先记录 `last_observed_main`，再释放 lock。如果配置了 remote，随后推送 candidate。remote push 失败时会保守处理：session 进入 `recovery_required`，锁保持占用，远端问题修复后可以继续运行 `sync` 重试。
+本地 publish 后，Coconut 会记录 `last_observed_main`、将 session 标记为 clean、释放 lock、fast-forward clean idle sessions，并广播 main update。如果配置了 remote，随后会尝试 best-effort server-ref sync。remote sync 失败不再阻塞本地发布：Coconut 会记录 `remote_sync_failed` event，并在后续 `sync` 中重试。
 
 发布成功后，Coconut 会：
 

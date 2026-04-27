@@ -198,12 +198,16 @@ def _main(argv: list[str] | None = None) -> int:
             session = get_session(db, args.session)
         if session is None:
             raise RuntimeError(f"Unknown session: {args.session}")
+        remote_errors = [_sync_remote_best_effort(repo, config)]
         if session.active_task is not None:
             if session.state in {"fusing", "blocked", "recovery_required"}:
                 response = send_completion(repo / config.socket_path, session)
+                remote_errors.append(_sync_remote_best_effort(repo, config))
                 print(_format_sync_completion_response(response, session))
+                _print_remote_sync_errors(remote_errors)
                 return 0 if response.get("type") == "ack" else 1
             print(f"{session.name}: sync already in progress ({session.state})")
+            _print_remote_sync_errors(remote_errors)
             return 0
         socket_path = repo / config.socket_path
         if not socket_path.exists():
@@ -218,10 +222,13 @@ def _main(argv: list[str] | None = None) -> int:
             raise RuntimeError(response["message"])
         if response.get("type") == "queued" and response.get("session") == session.name:
             print(f"Queued {session.name} for sync")
+            _print_remote_sync_errors(remote_errors)
             return 0
         if response.get("type") == "ack" and response.get("session") == session.name:
+            remote_errors.append(_sync_remote_best_effort(repo, config))
             message = response.get("message") or "no changes to sync"
             print(f"{session.name}: {message}")
+            _print_remote_sync_errors(remote_errors)
             return 0
         raise RuntimeError("Unexpected sync response")
     if args.command == "resume":
@@ -352,3 +359,24 @@ def _format_sync_completion_response(response: dict, session) -> str:
         reason = response.get("reason") or "blocked"
         return f"Blocked {response_session} {task_id}: {reason}"
     raise RuntimeError("Unexpected sync completion response")
+
+
+def _sync_remote_best_effort(repo, config) -> str | None:
+    from .git import try_force_push_server_refs
+
+    error = try_force_push_server_refs(repo, config.remote)
+    if error is None:
+        return None
+    return (
+        f"remote sync to {config.remote} failed and was skipped; "
+        f"will retry on the next coconut sync: {error}"
+    )
+
+
+def _print_remote_sync_errors(errors: list[str | None]) -> None:
+    seen: set[str] = set()
+    for error in errors:
+        if error is None or error in seen:
+            continue
+        seen.add(error)
+        print(f"coconut: warning: {error}", file=sys.stderr)

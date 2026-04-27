@@ -167,6 +167,7 @@ def _session_agents_content(*, session: str, branch: str, config: CoconutConfig)
             "Coconut coordinates this repository's multi-Codex collaboration.",
             "Do not run `git pull`, `git merge`, or `git push` against the main branch directly.",
             "Do not publish `main` yourself. Coconut is the only writer to local `main`.",
+            "If a remote is configured, `coconut sync` best-effort force-syncs server branch refs to that remote.",
             "",
             "During normal collaboration, use one Coconut command:",
             "",

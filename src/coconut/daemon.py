@@ -16,8 +16,8 @@ from .git import (
     fast_forward_ref,
     has_unsafe_git_state,
     is_dirty,
-    push_ref,
     reset_hard,
+    try_force_push_server_refs,
     update_ref,
 )
 from .state import (
@@ -712,26 +712,18 @@ def publish_candidate(
         _release_lock_if_owned(db, session_name, task_id)
         raise
 
-    if config.remote:
-        try:
-            push_ref(repo, config.remote, candidate, f"refs/heads/{config.main_branch}")
-        except Exception as exc:
-            reason = f"remote push failed: {exc}"
-            transition_session(
-                db,
-                session_name,
-                "recovery_required",
-                reason=reason,
-                active_task=task_id,
-                blocked_reason=reason,
-            )
-            raise RuntimeError(reason) from exc
-
     transition_session(db, session_name, "clean", reason="published", active_task=None)
     update_last_seen_main(db, session_name, candidate)
     _release_lock_if_owned(db, session_name, task_id)
     fast_forward_clean_sessions(repo, db, config, candidate)
     broadcast_main_updated(db, candidate, send_control=send_control)
+    remote_error = try_force_push_server_refs(repo, config.remote)
+    if remote_error is not None:
+        record_event(
+            db,
+            "remote_sync_failed",
+            {"session": session_name, "task_id": task_id, "error": remote_error},
+        )
 
 
 def _stop_publish(
