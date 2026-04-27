@@ -43,10 +43,7 @@ Operator/startup commands:
 ```bash
 coconut init --main main --remote origin
 coconut daemon
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  -- codex
+coconut join alice
 ```
 
 Developer collaboration command:
@@ -106,6 +103,28 @@ Use `--remote origin` only if that remote exists. With a remote configured,
 the server-side repository remains authoritative. Omit `--remote` for
 local-only coordination.
 
+Before developers join, add a top-level `developers` object to
+`.coconut/config.json` while keeping the other keys that `coconut init` wrote:
+
+```json
+{
+  "developers": {
+    "alice": {
+      "git_user_name": "Alice Example",
+      "git_user_email": "alice@example.com"
+    },
+    "bob": {
+      "git_user_name": "Bob Example",
+      "git_user_email": "bob@example.com"
+    }
+  }
+}
+```
+
+`command` is optional per developer; when omitted, Coconut starts `codex`. For
+a custom Codex launch, use a JSON string array such as
+`"command": ["codex", "--model", "gpt-5.5"]`.
+
 ## Starting Codex Sessions
 
 Start one daemon in a long-running terminal from the project repository:
@@ -117,15 +136,8 @@ coconut daemon
 Start each Codex session through Coconut from that developer's tmux window:
 
 ```bash
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  -- codex
-
-coconut join --name bob \
-  --git-user-name "Bob Example" \
-  --git-user-email bob@example.com \
-  -- codex
+coconut join alice
+coconut join bob
 ```
 
 Each joined session gets:
@@ -136,10 +148,9 @@ Each joined session gets:
 - a Git-ignored `AGENTS.md` in that worktree, unless the project already has
   its own `AGENTS.md`.
 
-`join` writes the supplied Git identity into that worktree's per-worktree Git
-config, so Coconut snapshot commits and Codex candidate commits have the right
-author. If identity is not supplied, the worktree must already have effective
-`user.name` and `user.email` Git config.
+`join` reads the developer's Git identity from `.coconut/config.json` and writes
+it into that worktree's per-worktree Git config, so Coconut snapshot commits
+and Codex candidate commits have the right author.
 
 Coconut does not automatically infer a tmux pane, because `TMUX_PANE` can leak
 through scripts, tests, or nested shells and target the wrong Codex. By default,
@@ -147,11 +158,7 @@ Coconut prints the task and prompt file paths when a sync task starts. To paste
 sync prompts directly into the Codex pane, opt in explicitly:
 
 ```bash
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  --tmux-target "$TMUX_PANE" \
-  -- codex
+coconut join --tmux-target "$TMUX_PANE" alice
 ```
 
 Only pass `--tmux-target "$TMUX_PANE"` when running `join` from the same tmux
@@ -166,10 +173,7 @@ collaboration session and that normal synchronization uses only
 If a developer closes their Codex window, restart with the same session name:
 
 ```bash
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  -- codex
+coconut join alice
 ```
 
 Coconut reuses `.coconut/worktrees/alice` and `coconut/alice`. On startup,
@@ -303,7 +307,7 @@ Common operator commands:
 ```bash
 coconut init --main main --remote origin
 coconut daemon
-coconut join --name alice --git-user-name "Alice Example" --git-user-email alice@example.com -- codex
+coconut join alice
 coconut status
 coconut log
 ```

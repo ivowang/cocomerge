@@ -56,11 +56,14 @@ developer workflow.
 The daemon does not automatically queue dirty sessions. Dirty work stays local
 until the owning session explicitly runs `sync`.
 
-`join` accepts `--git-user-name` and `--git-user-email`. When supplied, Coconut
-enables Git `extensions.worktreeConfig` and writes `user.name`/`user.email` with
+`join <name>` resolves the developer from `config.developers[name]`. Coconut
+uses that entry's `git_user_name` and `git_user_email`, enables Git
+`extensions.worktreeConfig`, and writes `user.name`/`user.email` with
 `git config --worktree`, so each developer's managed worktree can commit with a
-distinct identity under the shared server account. If they are not supplied, an
-effective Git identity must already exist.
+distinct identity under the shared server account. If the entry has no
+`command`, Coconut starts `codex`; otherwise it uses the configured JSON string
+array. Legacy `--name` and `--git-user-*` flags remain as compatibility hooks
+but are not part of the user workflow.
 
 On every `join`, Coconut calls `prepare_join_startup_notice()` before launching
 the session command. This makes restart behavior explicit:

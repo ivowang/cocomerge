@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import sqlite3
-import subprocess
 import textwrap
 from pathlib import Path
 
@@ -123,7 +122,7 @@ def _configure_worktree_identity(
         names = ", ".join(missing)
         raise RuntimeError(
             f"Git identity is not configured for this session ({names}). "
-            "Run coconut join with --git-user-name and --git-user-email."
+            "Configure this developer in .coconut/config.json before running coconut join."
         )
 
 
@@ -468,9 +467,3 @@ def send_completion(
         message["reason"] = blocked_reason
     raw = send_message(socket_path, message, timeout=5)
     return decode_message(raw)
-
-
-def run_session_command(worktree: Path, command: list[str]) -> int:
-    if not command:
-        raise ValueError("join requires a command after --")
-    return subprocess.call(command, cwd=worktree)

@@ -22,15 +22,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("daemon")
 
     join_parser = subparsers.add_parser("join")
-    join_parser.add_argument("--name", required=True)
-    join_parser.add_argument("--git-user-name")
-    join_parser.add_argument("--git-user-email")
+    join_parser.add_argument("session", nargs="?", metavar="user_name")
+    join_parser.add_argument("--name", help=argparse.SUPPRESS)
+    join_parser.add_argument("--git-user-name", help=argparse.SUPPRESS)
+    join_parser.add_argument("--git-user-email", help=argparse.SUPPRESS)
     join_parser.add_argument(
         "--tmux-target",
         help="tmux pane that should receive Coconut prompts; prompt injection is opt-in",
     )
     join_parser.add_argument("--no-auto-prompt", action="store_true", help=argparse.SUPPRESS)
-    join_parser.add_argument("session_command", nargs=argparse.REMAINDER)
+    join_parser.add_argument("session_command", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
 
     subparsers.add_parser("status")
 
@@ -113,7 +114,14 @@ def _main(argv: list[str] | None = None) -> int:
         import os
 
         from .agent import SessionAgent
-        from .config import find_coconut_root, load_config, validate_config
+        from .config import (
+            find_coconut_root,
+            get_developer_command,
+            get_developer_identity,
+            has_developer,
+            load_config,
+            validate_config,
+        )
         from .session import ensure_session_worktree, prepare_join_startup_notice, register_with_daemon
         from .state import connect, initialize_schema
 
@@ -122,17 +130,42 @@ def _main(argv: list[str] | None = None) -> int:
         validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
+        session_arg = args.session
+        command = args.session_command
+        if args.name is not None and session_arg is not None and session_arg != args.name:
+            if not command:
+                raise RuntimeError("join received two different session names")
+            command = [session_arg, *command]
+            session_arg = None
+        session_name = session_arg or args.name
+        if session_name is None:
+            raise RuntimeError("Usage: coconut join <user_name>")
+        if session_arg is not None and args.name is not None and session_arg != args.name:
+            raise RuntimeError("join received two different session names")
+        git_user_name = args.git_user_name
+        git_user_email = args.git_user_email
+        if command and command[0] == "--":
+            command = command[1:]
+        if has_developer(config, session_name):
+            configured_name, configured_email = get_developer_identity(config, session_name)
+            git_user_name = git_user_name or configured_name
+            git_user_email = git_user_email or configured_email
+            if not command:
+                command = get_developer_command(config, session_name)
+        elif args.name is None:
+            raise RuntimeError(
+                f"Developer {session_name!r} is not configured in .coconut/config.json"
+            )
         record = ensure_session_worktree(
             repo,
             config,
             db,
-            args.name,
-            git_user_name=args.git_user_name,
-            git_user_email=args.git_user_email,
+            session_name,
+            git_user_name=git_user_name,
+            git_user_email=git_user_email,
         )
-        command = args.session_command
-        if command and command[0] == "--":
-            command = command[1:]
+        if not command:
+            command = ["codex"]
         tmux_target = None if args.no_auto_prompt else args.tmux_target
         record, startup_prompt = prepare_join_startup_notice(repo, config, db, record)
         agent = SessionAgent(

@@ -38,7 +38,7 @@ coconut sync
 
 daemon 不会自动把 dirty session 入队。dirty work 会留在本地，直到 owner 显式运行 `sync`。
 
-`join` 接受 `--git-user-name` 和 `--git-user-email`。传入后，Coconut 会启用 Git `extensions.worktreeConfig`，并用 `git config --worktree` 写入 `user.name`/`user.email`，这样同一个服务器账号下的不同开发者也能在各自 managed worktree 中使用不同提交身份。如果没有传入，worktree 必须已经能读取到有效 Git identity。
+`join <name>` 会从 `config.developers[name]` 解析开发者配置。Coconut 使用其中的 `git_user_name` 和 `git_user_email`，启用 Git `extensions.worktreeConfig`，并用 `git config --worktree` 写入 `user.name`/`user.email`，这样同一个服务器账号下的不同开发者也能在各自 managed worktree 中使用不同提交身份。如果该 entry 没有 `command`，Coconut 默认启动 `codex`；否则使用配置里的 JSON 字符串数组。旧的 `--name` 和 `--git-user-*` flag 仅作为兼容入口保留，不属于用户工作流。
 
 每次 `join` 启动 session command 前，Coconut 都会调用 `prepare_join_startup_notice()`，让重启行为变成显式流程：
 

@@ -37,10 +37,7 @@ Operator 负责初始化和启动：
 ```bash
 coconut init --main main --remote origin
 coconut daemon
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  -- codex
+coconut join alice
 ```
 
 开发者协作时使用：
@@ -94,6 +91,25 @@ coconut init --main main --remote origin
 
 只有当 `origin` 已经存在时才使用 `--remote origin`。配置 remote 后，`coconut sync` 会用 force-push/prune 的方式把本地 branch refs 同步到该 remote，因此以 server 上的仓库为权威状态。如果只需要本地协调，可以省略 `--remote`。
 
+开发者 join 之前，在 `.coconut/config.json` 中添加顶层 `developers` 对象，同时保留 `coconut init` 写入的其他 key：
+
+```json
+{
+  "developers": {
+    "alice": {
+      "git_user_name": "Alice Example",
+      "git_user_email": "alice@example.com"
+    },
+    "bob": {
+      "git_user_name": "Bob Example",
+      "git_user_email": "bob@example.com"
+    }
+  }
+}
+```
+
+每个开发者的 `command` 字段可选；不写时 Coconut 默认启动 `codex`。如果需要自定义 Codex 启动方式，可以写 JSON 字符串数组，例如 `"command": ["codex", "--model", "gpt-5.5"]`。
+
 ## 启动 Codex Sessions
 
 在项目仓库中，用一个长期运行的终端启动 daemon：
@@ -105,15 +121,8 @@ coconut daemon
 每个 Codex session 都在对应开发者自己的 tmux 窗口中通过 Coconut 启动：
 
 ```bash
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  -- codex
-
-coconut join --name bob \
-  --git-user-name "Bob Example" \
-  --git-user-email bob@example.com \
-  -- codex
+coconut join alice
+coconut join bob
 ```
 
 每个 joined session 会得到：
@@ -123,16 +132,12 @@ coconut join --name bob \
 - 一个接收 Coconut task 的 session agent；
 - 一个位于该 worktree 根目录、被 Git 忽略的 `AGENTS.md`，除非项目本身已经有自己的 `AGENTS.md`。
 
-`join` 会把传入的 Git identity 写入该 worktree 的 per-worktree Git config，因此 Coconut snapshot commit 和 Codex candidate commit 都会使用正确作者。如果没有传入 identity，该 worktree 必须已经能读取到有效的 `user.name` 和 `user.email` Git config。
+`join` 会从 `.coconut/config.json` 读取该开发者的 Git identity，并写入该 worktree 的 per-worktree Git config，因此 Coconut snapshot commit 和 Codex candidate commit 都会使用正确作者。
 
 Coconut 不会自动推断 tmux pane，因为 `TMUX_PANE` 可能从脚本、测试或嵌套 shell 中泄漏，导致 prompt 被粘贴到错误的 Codex。默认情况下，sync task 开始时 Coconut 会在终端打印 task 和 prompt 文件路径。如果希望 Coconut 把 sync prompt 直接粘贴进 Codex pane，需要显式 opt in：
 
 ```bash
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  --tmux-target "$TMUX_PANE" \
-  -- codex
+coconut join --tmux-target "$TMUX_PANE" alice
 ```
 
 只有在当前 `join` 命令确实是在承载该开发者 Codex 的同一个 tmux pane 中运行时，才使用 `--tmux-target "$TMUX_PANE"`。
@@ -144,10 +149,7 @@ coconut join --name alice \
 如果开发者关掉了自己的 Codex 窗口，之后用同一个 session name 重新启动：
 
 ```bash
-coconut join --name alice \
-  --git-user-name "Alice Example" \
-  --git-user-email alice@example.com \
-  -- codex
+coconut join alice
 ```
 
 Coconut 会复用 `.coconut/worktrees/alice` 和 `coconut/alice`。`join` 启动时会先检查这个 session 是否有遗留的 Coconut 责任：
@@ -256,7 +258,7 @@ coconut sync
 ```bash
 coconut init --main main --remote origin
 coconut daemon
-coconut join --name alice --git-user-name "Alice Example" --git-user-email alice@example.com -- codex
+coconut join alice
 coconut status
 coconut log
 ```
