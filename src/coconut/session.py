@@ -8,7 +8,7 @@ from pathlib import Path
 from .config import CoconutConfig
 from .git import GitError, create_worktree, current_head, run_git
 from .protocol import ProtocolError, decode_message
-from .state import SessionRecord, get_session, register_session
+from .state import SessionRecord, get_session, list_sessions, register_session
 from .transport import send_message
 
 
@@ -170,7 +170,7 @@ def _session_agents_content(*, session: str, branch: str, config: CoconutConfig)
             "",
             "During normal collaboration, use one Coconut command:",
             "",
-            f"    coconut sync {session}",
+            "    coconut sync",
             "",
             "When you have local work, sync requests an integration task. Wait for Coconut",
             "to print a task file path in this Codex terminal. Read that task file, treat",
@@ -179,7 +179,7 @@ def _session_agents_content(*, session: str, branch: str, config: CoconutConfig)
             "",
             "After committing the final candidate and making sure the worktree is clean, run sync again:",
             "",
-            f"    coconut sync {session}",
+            "    coconut sync",
             "",
             "If the integration cannot be completed safely, stop and explain the blocker",
             "in your session output. Do not run sync again until the candidate is ready.",
@@ -218,6 +218,28 @@ def register_with_daemon(
         return decode_message(raw)
     except (OSError, TimeoutError, ProtocolError):
         return None
+
+
+def infer_session_from_cwd(db: sqlite3.Connection, cwd: Path | None = None) -> SessionRecord:
+    current = cwd or Path.cwd()
+    try:
+        worktree = Path(run_git(current, ["rev-parse", "--show-toplevel"])).resolve()
+    except GitError as exc:
+        raise RuntimeError("coconut sync must run inside a Git worktree") from exc
+
+    matches = [
+        session
+        for session in list_sessions(db)
+        if Path(session.worktree).resolve() == worktree
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise RuntimeError(
+            "Cannot infer Coconut session from this directory. "
+            "Run coconut sync inside a managed worktree, or pass a session name from the main repository."
+        )
+    raise RuntimeError(f"Multiple Coconut sessions match this worktree: {worktree}")
 
 
 def send_completion(

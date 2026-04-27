@@ -27,7 +27,10 @@ pastes a concise sync prompt into that pane with `tmux load-buffer`,
 
 ## Product Command Model
 
-The normal developer command is `coconut sync <session>`.
+The normal developer command is `coconut sync`, run from inside the managed
+worktree. The CLI infers the session by matching the current Git worktree root
+against registered `SessionRecord.worktree` values. A session argument remains
+available for operator/internal use from the main repository.
 
 Internally, `sync` maps to different protocol actions:
 
@@ -54,7 +57,7 @@ effective Git identity must already exist.
 
 `ensure_session_worktree()` writes an `AGENTS.md` file into each managed
 worktree. The file tells Codex that it is working inside a Coconut session and
-that normal collaboration uses `coconut sync <session>`.
+that normal collaboration uses `coconut sync` from inside that worktree.
 
 The generated file must not create integration work by itself. Coconut adds
 `/AGENTS.md` to the repository's local `.git/info/exclude` before writing it,
@@ -140,8 +143,8 @@ latest `main`, writes a task file, then sends `start_fusion`.
 
 The task file is created by `src/coconut/tasks.py`. It includes the snapshot
 commit, latest main, last seen main, diff summary, verification command, and
-the instruction to run `coconut sync <session>` again after committing the
-candidate.
+the instruction to run `coconut sync` again from the same worktree after
+committing the candidate.
 
 ## Publishing Flow
 

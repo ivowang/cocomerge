@@ -11,7 +11,7 @@ serializes the moment when a developer's work becomes the next `main`.
 For day-to-day collaboration, a developer only needs one Coconut command:
 
 ```bash
-coconut sync <user_name>
+coconut sync
 ```
 
 `sync` means "move this Coconut session to the next safe synchronization
@@ -27,7 +27,8 @@ or `git push main` directly. Coconut is the only writer to local `main`.
 
 The daemon does not automatically integrate dirty sessions. Local work stays in
 the developer's managed worktree until that developer or their Codex explicitly
-runs `coconut sync <user_name>`.
+runs `coconut sync` from inside that worktree. In Codex, run it as a shell
+command, for example `!coconut sync`.
 
 ## Roles
 
@@ -45,7 +46,7 @@ coconut join --name alice \
 Developer collaboration command:
 
 ```bash
-coconut sync alice
+coconut sync
 ```
 
 Inspection commands:
@@ -139,7 +140,7 @@ Without tmux, Coconut still prints the task and prompt file paths.
 
 The generated `AGENTS.md` tells Codex that it is in a Coconut-managed
 collaboration session and that normal synchronization uses only
-`coconut sync <name>`.
+`coconut sync` from inside the managed worktree.
 
 ## What `sync` Does
 
@@ -148,7 +149,7 @@ collaboration session and that normal synchronization uses only
 If Alice has no local work and `main` has advanced, this catches Alice up:
 
 ```bash
-coconut sync alice
+coconut sync
 ```
 
 If Alice is already current, Coconut reports that the session is already
@@ -159,7 +160,7 @@ synced.
 If Alice has local edits or commits, this requests integration:
 
 ```bash
-coconut sync alice
+coconut sync
 ```
 
 When Alice reaches the front of the queue, Coconut:
@@ -175,7 +176,7 @@ Alice's feature on top of the latest `main`. After it commits the final
 candidate and the worktree is clean, it runs the same command again:
 
 ```bash
-coconut sync alice
+coconut sync
 ```
 
 Coconut then verifies the candidate, fast-forwards local `main`, pushes the
@@ -193,14 +194,14 @@ implements feature B. Neither branch is integrated automatically.
 Alice runs:
 
 ```bash
-coconut sync alice
+!coconut sync
 ```
 
 Coconut gives Alice's Codex a task. Alice's Codex applies feature A on latest
 `main`, commits, and runs:
 
 ```bash
-coconut sync alice
+!coconut sync
 ```
 
 Now feature A is the new `main`.
@@ -208,14 +209,14 @@ Now feature A is the new `main`.
 Bob later runs:
 
 ```bash
-coconut sync bob
+!coconut sync
 ```
 
 Bob's task is based on the current `main`, which already includes feature A.
 Bob's Codex applies feature B on top of that, commits, and runs:
 
 ```bash
-coconut sync bob
+!coconut sync
 ```
 
 This gives the team a serial mainline even though the Codex sessions worked
@@ -239,7 +240,7 @@ Coconut prefers stopping over guessing:
 Normal developer command:
 
 ```bash
-coconut sync alice
+coconut sync
 ```
 
 Common operator commands:

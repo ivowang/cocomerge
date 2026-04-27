@@ -34,8 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("log")
 
-    sync_parser = subparsers.add_parser("sync")
-    sync_parser.add_argument("session")
+    subparsers.add_parser("sync")
 
     return parser
 
@@ -64,7 +63,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     raw = sys.argv[1:] if argv is None else list(argv)
     if raw and raw[0] in RECOVERY_COMMANDS:
         return build_recovery_parser().parse_args(raw)
-    return build_parser().parse_args(raw)
+    if raw and raw[0] == "sync" and len(raw) > 1 and not raw[1].startswith("-"):
+        if len(raw) > 2:
+            raise ValueError("sync accepts at most one optional session name")
+        args = build_parser().parse_args(["sync"])
+        args.session = raw[1]
+        return args
+    args = build_parser().parse_args(raw)
+    if getattr(args, "command", None) == "sync":
+        args.session = None
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,11 +97,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Initialized coconut in {repo / '.coconut'}")
         return 0
     if args.command == "daemon":
-        from .config import find_repo_root, load_config, validate_config
+        from .config import find_coconut_root, load_config, validate_config
         from .daemon import run_daemon
         from .state import connect, initialize_schema
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -103,11 +111,11 @@ def _main(argv: list[str] | None = None) -> int:
         import os
 
         from .agent import SessionAgent
-        from .config import find_repo_root, load_config, validate_config
+        from .config import find_coconut_root, load_config, validate_config
         from .session import ensure_session_worktree, register_with_daemon
         from .state import connect, initialize_schema
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -147,11 +155,11 @@ def _main(argv: list[str] | None = None) -> int:
             control_thread.join(timeout=2)
             raise
     if args.command == "status":
-        from .config import find_repo_root, load_config, validate_config
+        from .config import find_coconut_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_status
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -159,29 +167,32 @@ def _main(argv: list[str] | None = None) -> int:
         print(format_status(repo, db, config), end="")
         return 0
     if args.command == "log":
-        from .config import find_repo_root, load_config, validate_config
+        from .config import find_coconut_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_events
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         validate_config(repo, load_config(repo))
         db = connect(repo)
         initialize_schema(db)
         print(format_events(db), end="")
         return 0
     if args.command == "sync":
-        from .config import find_repo_root, load_config, validate_config
+        from .config import find_coconut_root, load_config, validate_config
         from .protocol import decode_message
-        from .session import send_completion
+        from .session import infer_session_from_cwd, send_completion
         from .state import connect, get_session, initialize_schema
         from .transport import send_message
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
-        session = get_session(db, args.session)
+        if args.session is None:
+            session = infer_session_from_cwd(db)
+        else:
+            session = get_session(db, args.session)
         if session is None:
             raise RuntimeError(f"Unknown session: {args.session}")
         if session.active_task is not None:
@@ -189,29 +200,29 @@ def _main(argv: list[str] | None = None) -> int:
                 response = send_completion(repo / config.socket_path, session)
                 print(_format_sync_completion_response(response, session))
                 return 0 if response.get("type") == "ack" else 1
-            print(f"{args.session}: sync already in progress ({session.state})")
+            print(f"{session.name}: sync already in progress ({session.state})")
             return 0
         socket_path = repo / config.socket_path
         if not socket_path.exists():
             raise RuntimeError("coconut daemon is not running")
         raw = send_message(
             socket_path,
-            {"type": "ready_to_integrate", "session": args.session},
+            {"type": "ready_to_integrate", "session": session.name},
             timeout=5,
         )
         response = decode_message(raw)
         if response.get("type") == "error":
             raise RuntimeError(response["message"])
-        if response.get("type") == "queued" and response.get("session") == args.session:
-            print(f"Queued {args.session} for sync")
+        if response.get("type") == "queued" and response.get("session") == session.name:
+            print(f"Queued {session.name} for sync")
             return 0
-        if response.get("type") == "ack" and response.get("session") == args.session:
+        if response.get("type") == "ack" and response.get("session") == session.name:
             message = response.get("message") or "no changes to sync"
-            print(f"{args.session}: {message}")
+            print(f"{session.name}: {message}")
             return 0
         raise RuntimeError("Unexpected sync response")
     if args.command == "resume":
-        from .config import find_repo_root, load_config
+        from .config import find_coconut_root, load_config
         from .state import (
             connect,
             enqueue_session,
@@ -221,7 +232,7 @@ def _main(argv: list[str] | None = None) -> int:
             transition_session,
         )
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -244,7 +255,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Resumed {args.session}")
         return 0
     if args.command == "abandon":
-        from .config import find_repo_root, load_config
+        from .config import find_coconut_root, load_config
         from .state import (
             connect,
             dequeue_session,
@@ -255,7 +266,7 @@ def _main(argv: list[str] | None = None) -> int:
             transition_session,
         )
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -273,11 +284,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Abandoned {args.session}")
         return 0
     if args.command == "done":
-        from .config import find_repo_root, load_config
+        from .config import find_coconut_root, load_config
         from .session import send_completion
         from .state import connect, get_session, initialize_schema
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         config = load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -288,11 +299,11 @@ def _main(argv: list[str] | None = None) -> int:
         print(_format_completion_response(response, session, expected_type="ack"))
         return 0
     if args.command == "block":
-        from .config import find_repo_root, load_config
+        from .config import find_coconut_root, load_config
         from .session import send_completion
         from .state import connect, get_session, initialize_schema
 
-        repo = find_repo_root()
+        repo = find_coconut_root()
         config = load_config(repo)
         db = connect(repo)
         initialize_schema(db)

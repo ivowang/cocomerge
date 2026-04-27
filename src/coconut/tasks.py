@@ -82,7 +82,7 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
                 "",
                 "## Completion",
                 "",
-                f"After committing the final candidate, run `coconut sync {task.session}` again.",
+                "After committing the final candidate, run `coconut sync` again from this worktree.",
                 "Coconut will verify, publish local `main`, and push the configured remote.",
                 "If you cannot complete the integration safely, stop and explain the blocker",
                 "in your session output. An operator can inspect Coconut state and recover.",

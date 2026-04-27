@@ -34,6 +34,36 @@ def find_repo_root(start: Path | None = None) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
+def find_coconut_root(start: Path | None = None) -> Path:
+    cwd = Path.cwd() if start is None else start
+    git_root = find_repo_root(cwd)
+    candidates = [git_root, *git_root.parents]
+
+    common_dir = _git_common_dir(cwd)
+    if common_dir is not None:
+        candidates.insert(0, common_dir.parent)
+
+    for candidate in candidates:
+        if (candidate / CONFIG_PATH).exists():
+            return candidate.resolve()
+    raise FileNotFoundError(f"{git_root / CONFIG_PATH} does not exist; run coconut init first")
+
+
+def _git_common_dir(cwd: Path) -> Path | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=cwd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    common_dir = Path(result.stdout.strip())
+    return common_dir if common_dir.is_absolute() else (cwd / common_dir).resolve()
+
+
 def init_config(
     repo: Path,
     *,
