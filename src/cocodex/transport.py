@@ -134,7 +134,7 @@ def _unlink_stale_socket(socket_path: Path) -> None:
     if not stat.S_ISSOCK(mode):
         raise RuntimeError(f"socket path exists and is not a socket: {socket_path}")
     if _socket_accepts_connections(socket_path):
-        raise RuntimeError(f"cocomerge daemon is already running at {socket_path}")
+        raise RuntimeError(f"cocodex daemon is already running at {socket_path}")
     _unlink_socket(socket_path)
 
 

@@ -42,12 +42,12 @@ def _diff_fence(diff_summary: str) -> str:
 
 def validation_file_path(repo: Path, task_id: str) -> Path:
     _validate_task_id(task_id)
-    return repo / ".cocomerge" / "tasks" / f"{task_id}.validation.md"
+    return repo / ".cocodex" / "tasks" / f"{task_id}.validation.md"
 
 
 def task_file_path(repo: Path, task_id: str) -> Path:
     _validate_task_id(task_id)
-    return repo / ".cocomerge" / "tasks" / f"{task_id}.md"
+    return repo / ".cocodex" / "tasks" / f"{task_id}.md"
 
 
 def validate_task_report(repo: Path, task_id: str) -> str | None:
@@ -56,7 +56,7 @@ def validate_task_report(repo: Path, task_id: str) -> str | None:
         return (
             f"validation report is missing: {path}. "
             "Describe the tests you designed, the checks you ran, and the results, "
-            "then run cocomerge sync again."
+            "then run cocodex sync again."
         )
     content = path.read_text(encoding="utf-8", errors="replace").strip()
     if len(content) < 40:
@@ -69,7 +69,7 @@ def validate_task_report(repo: Path, task_id: str) -> str | None:
 
 def write_task_file(repo: Path, task: IntegrationTask) -> Path:
     _validate_task_id(task.task_id)
-    tasks_dir = repo / ".cocomerge" / "tasks"
+    tasks_dir = repo / ".cocodex" / "tasks"
     tasks_dir.mkdir(parents=True, exist_ok=True)
     path = task_file_path(repo, task.task_id)
     validation_path = validation_file_path(repo, task.task_id)
@@ -78,7 +78,7 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
     path.write_text(
         "\n".join(
             [
-                "# Cocomerge Integration Task",
+                "# Cocodex Integration Task",
                 "",
                 f"Session: {task.session}",
                 f"Task: {task.task_id}",
@@ -91,7 +91,7 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
                 "",
                 "Based on latest `main`, re-implement or semantically merge the feature",
                 "represented by the snapshot diff. The final worktree must be a",
-                "candidate new `main`. Cocomerge will reject this task if you sync again",
+                "candidate new `main`. Cocodex will reject this task if you sync again",
                 "without committing a candidate. If the snapshot behavior is already",
                 "covered, create an explicit no-op commit that explains why.",
                 "",
@@ -99,7 +99,7 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
                 "",
                 "Safe pause point: if this task interrupts another development request,",
                 "first choose a safe pause point. Preserve the previous request's",
-                "remaining intent in your session output or notes, complete this Cocomerge",
+                "remaining intent in your session output or notes, complete this Cocodex",
                 "task, and then continue the paused development work after sync succeeds.",
                 "",
                 "## Snapshot Diff",
@@ -116,7 +116,7 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
                 "and use targeted scripts or manual checks when the repository has no",
                 "suitable automated coverage.",
                 "",
-                "Before running `cocomerge sync` again, write a validation report to:",
+                "Before running `cocodex sync` again, write a validation report to:",
                 f"{validation_path}",
                 "",
                 "The report must summarize:",
@@ -130,11 +130,11 @@ def write_task_file(repo: Path, task: IntegrationTask) -> Path:
                 "## Completion",
                 "",
                 "After committing the final candidate and confirming the worktree is clean,",
-                "write the validation report, then run `cocomerge sync` again from this worktree.",
-                "Cocomerge will require the validation report, publish local `main`, and",
+                "write the validation report, then run `cocodex sync` again from this worktree.",
+                "Cocodex will require the validation report, publish local `main`, and",
                 "best-effort sync the configured remote.",
                 "If you cannot complete the integration safely, stop and explain the blocker",
-                "in your session output. An operator can inspect Cocomerge state and recover.",
+                "in your session output. An operator can inspect Cocodex state and recover.",
                 "",
             ]
         ),

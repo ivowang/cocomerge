@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from .config import CocomergeConfig
+from .config import CocodexConfig
 from .git import (
     add_all,
     commit,
@@ -245,7 +245,7 @@ def recover_incomplete_sessions(db: sqlite3.Connection) -> None:
 def detect_external_main_update(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
 ) -> bool:
     observed = get_metadata(db, "last_observed_main")
     current = current_head(repo, config.main_branch)
@@ -315,7 +315,7 @@ def _session_has_changes(session: SessionRecord) -> bool:
 def _sync_clean_session_to_main(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     session: SessionRecord,
 ) -> str:
     worktree = Path(session.worktree)
@@ -335,7 +335,7 @@ def _sync_clean_session_to_main(
 def prepare_integration(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     session_name: str,
     *,
     task_id: str | None = None,
@@ -368,15 +368,15 @@ def prepare_integration(
         head = current_head(worktree)
         if is_dirty(worktree):
             add_all(worktree)
-            snapshot = commit(worktree, f"cocomerge snapshot: {session_name} {task_id}")
+            snapshot = commit(worktree, f"cocodex snapshot: {session_name} {task_id}")
         elif head != base:
             snapshot = head
         else:
             no_changes = True
             raise RuntimeError("no changes to snapshot")
 
-        update_ref(worktree, f"refs/cocomerge/snapshots/{task_id}", snapshot)
-        update_ref(worktree, f"refs/cocomerge/bases/{task_id}", latest_main)
+        update_ref(worktree, f"refs/cocodex/snapshots/{task_id}", snapshot)
+        update_ref(worktree, f"refs/cocodex/bases/{task_id}", latest_main)
         diff_summary = diff(worktree, base, snapshot)
         reset_hard(worktree, latest_main)
         task = IntegrationTask(
@@ -424,7 +424,7 @@ def send_control_message(session: SessionRecord, message: dict) -> dict:
 def fast_forward_clean_sessions(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     main_commit: str,
 ) -> None:
     for session in list_sessions(db):
@@ -482,7 +482,7 @@ def broadcast_main_updated(
 def process_queue_once(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     *,
     send_control: ControlSender = send_control_message,
     task_id_factory: TaskIdFactory = create_task_id,
@@ -615,7 +615,7 @@ def _mark_waiting_sessions_queued(db: sqlite3.Connection, *, exclude: str) -> No
 def publish_candidate(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     session_name: str,
     task_id: str,
     candidate: str,
@@ -837,7 +837,7 @@ def _stop_publish(
 
 def _task_base(worktree: Path, task_id: str) -> str | None:
     try:
-        return current_head(worktree, f"refs/cocomerge/bases/{task_id}")
+        return current_head(worktree, f"refs/cocodex/bases/{task_id}")
     except Exception:
         return None
 
@@ -897,7 +897,7 @@ def _release_lock_if_owned(db: sqlite3.Connection, session_name: str, task_id: s
 def handle_session_message(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     message: dict,
     *,
     now: Callable[[], float] = time.time,
@@ -906,7 +906,7 @@ def handle_session_message(
     session_name = message.get("session")
 
     if message_type == "register":
-        branch = message.get("branch") or f"cocomerge/{session_name}"
+        branch = message.get("branch") or f"cocodex/{session_name}"
         worktree = message.get("worktree") or str(repo / config.worktree_root / session_name)
         existing = get_session(db, session_name)
         if existing is not None:
@@ -1020,7 +1020,7 @@ def handle_session_message(
 def start_socket_server(
     repo: Path,
     db: sqlite3.Connection,
-    config: CocomergeConfig,
+    config: CocodexConfig,
 ) -> threading.Event:
     stop_event = threading.Event()
     socket_path = repo / config.socket_path
@@ -1050,7 +1050,7 @@ def start_socket_server(
     return stop_event
 
 
-def run_daemon(repo: Path, db: sqlite3.Connection, config: CocomergeConfig) -> int:
+def run_daemon(repo: Path, db: sqlite3.Connection, config: CocodexConfig) -> int:
     _daemon_log(
         "daemon starting",
         repo=repo,

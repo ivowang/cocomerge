@@ -5,7 +5,7 @@ import sqlite3
 import textwrap
 from pathlib import Path
 
-from .config import CocomergeConfig
+from .config import CocodexConfig
 from .git import GitError, create_worktree, current_head, fast_forward_ref, is_dirty, run_git
 from .protocol import ProtocolError, decode_message
 from .state import (
@@ -22,8 +22,8 @@ from .transport import send_message
 
 
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-COCOMERGE_AGENTS_MARKER = "<!-- cocomerge-managed-session-agents -->"
-COCOMERGE_AGENTS_FILE = "AGENTS.md"
+COCODEX_AGENTS_MARKER = "<!-- cocodex-managed-session-agents -->"
+COCODEX_AGENTS_FILE = "AGENTS.md"
 REJOIN_RECOVERABLE_PREFIXES = (
     "heartbeat timeout",
     "startup recovery from fusing",
@@ -33,7 +33,7 @@ REJOIN_RECOVERABLE_PREFIXES = (
 
 def ensure_session_worktree(
     repo: Path,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     db: sqlite3.Connection,
     session: str,
     *,
@@ -41,7 +41,7 @@ def ensure_session_worktree(
     git_user_email: str,
 ) -> SessionRecord:
     validate_session_name(session)
-    branch = f"cocomerge/{session}"
+    branch = f"cocodex/{session}"
     worktree = repo / config.worktree_root / session
     create_worktree(repo, branch=branch, worktree=worktree, start_point=config.main_branch)
     _validate_worktree(worktree, branch)
@@ -119,7 +119,7 @@ def _configure_worktree_identity(
         names = ", ".join(missing)
         raise RuntimeError(
             f"Git identity is not configured for this session ({names}). "
-            "Configure this developer in .cocomerge/config.json before running cocomerge join."
+            "Configure this developer in .cocodex/config.json before running cocodex join."
         )
 
 
@@ -128,12 +128,12 @@ def _ensure_session_agents_file(
     *,
     session: str,
     branch: str,
-    config: CocomergeConfig,
+    config: CocodexConfig,
 ) -> None:
-    agents_path = worktree / COCOMERGE_AGENTS_FILE
+    agents_path = worktree / COCODEX_AGENTS_FILE
     if agents_path.exists():
         existing = agents_path.read_text(encoding="utf-8", errors="replace")
-        if COCOMERGE_AGENTS_MARKER not in existing:
+        if COCODEX_AGENTS_MARKER not in existing:
             return
 
     _ensure_agents_file_is_ignored(worktree)
@@ -149,45 +149,45 @@ def _ensure_agents_file_is_ignored(worktree: Path) -> None:
     exclude_path = common_dir / "info" / "exclude"
     exclude_path.parent.mkdir(parents=True, exist_ok=True)
     existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
-    pattern = f"/{COCOMERGE_AGENTS_FILE}"
+    pattern = f"/{COCODEX_AGENTS_FILE}"
     if pattern in {line.strip() for line in existing.splitlines()}:
         return
     separator = "" if not existing or existing.endswith("\n") else "\n"
     exclude_path.write_text(
         existing
         + separator
-        + "# Cocomerge managed session instruction file\n"
+        + "# Cocodex managed session instruction file\n"
         + f"{pattern}\n",
         encoding="utf-8",
     )
 
 
-def _session_agents_content(*, session: str, branch: str, config: CocomergeConfig) -> str:
+def _session_agents_content(*, session: str, branch: str, config: CocodexConfig) -> str:
     remote = config.remote or "no remote configured"
     return "\n".join(
         [
-            COCOMERGE_AGENTS_MARKER,
-            "# Cocomerge Session Instructions",
+            COCODEX_AGENTS_MARKER,
+            "# Cocodex Session Instructions",
             "",
-            f"You are working in Cocomerge session `{session}`.",
+            f"You are working in Cocodex session `{session}`.",
             f"The repository main branch is `{config.main_branch}`.",
             f"The configured remote is `{remote}`.",
             "",
-            "Cocomerge coordinates this repository's multi-Codex collaboration.",
+            "Cocodex coordinates this repository's multi-Codex collaboration.",
             "Do not run `git pull`, `git merge`, or `git push` against the main branch directly.",
-            "Do not publish `main` yourself. Cocomerge is the only writer to local `main`.",
-            "If a remote is configured, `cocomerge sync` best-effort force-syncs server branch refs to that remote.",
+            "Do not publish `main` yourself. Cocodex is the only writer to local `main`.",
+            "If a remote is configured, `cocodex sync` best-effort force-syncs server branch refs to that remote.",
             "There is no fixed project-wide test command. For each sync task, design",
             "and run sufficient validation for the semantic merge, then write the",
             "validation report requested by the task file before running sync again.",
-            "When this Codex session starts or restarts, handle any Cocomerge restart",
+            "When this Codex session starts or restarts, handle any Cocodex restart",
             "notice before accepting or continuing unrelated feature work.",
             "",
-            "During normal collaboration, use one Cocomerge command:",
+            "During normal collaboration, use one Cocodex command:",
             "",
-            "    cocomerge sync",
+            "    cocodex sync",
             "",
-            "When you have local work, sync requests an integration task. Wait for Cocomerge",
+            "When you have local work, sync requests an integration task. Wait for Cocodex",
             "to print a task file path in this Codex terminal. Read that task file, treat",
             "the current worktree as latest `main`, and re-implement or semantically merge",
             "the snapshot described by the task on top of latest `main`.",
@@ -196,12 +196,12 @@ def _session_agents_content(*, session: str, branch: str, config: CocomergeConfi
             "",
             "After committing the final candidate and making sure the worktree is clean, run sync again:",
             "",
-            "    cocomerge sync",
+            "    cocodex sync",
             "",
             "If the integration cannot be completed safely, stop and explain the blocker",
             "in your session output. Do not run sync again until the candidate is ready.",
             "",
-            "This file is generated by Cocomerge for this managed worktree and is ignored by Git.",
+            "This file is generated by Cocodex for this managed worktree and is ignored by Git.",
             "",
         ]
     )
@@ -209,7 +209,7 @@ def _session_agents_content(*, session: str, branch: str, config: CocomergeConfi
 
 def prepare_join_startup_notice(
     repo: Path,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     db: sqlite3.Connection,
     session: SessionRecord,
 ) -> tuple[SessionRecord, str | None]:
@@ -271,20 +271,20 @@ def _active_task_notice(repo: Path, session: SessionRecord) -> str:
     if not task_path.exists():
         return textwrap.dedent(
             f"""
-            Cocomerge restart notice: this session references a missing sync task file.
+            Cocodex restart notice: this session references a missing sync task file.
 
             Session: {session.name}
             State: {session.state}
             Task file: {task_path}
             Reason: {reason}
 
-            Do not begin new feature work yet. Run `cocomerge status` and
-            `cocomerge log`; an operator should inspect or abandon this task.
+            Do not begin new feature work yet. Run `cocodex status` and
+            `cocodex log`; an operator should inspect or abandon this task.
             """
         ).lstrip()
     if session.state == "recovery_required":
         body = [
-            "Cocomerge restart notice: this session has an active sync task in recovery.",
+            "Cocodex restart notice: this session has an active sync task in recovery.",
             "",
             f"Session: {session.name}",
             f"State: {session.state}",
@@ -293,14 +293,14 @@ def _active_task_notice(repo: Path, session: SessionRecord) -> str:
             f"Reason: {reason}",
             "",
             "Do not begin new feature work yet. This state may need operator inspection.",
-            "Run `cocomerge status` and `cocomerge log`, then either recover this task",
+            "Run `cocodex status` and `cocodex log`, then either recover this task",
             "or have an operator abandon it.",
             "",
         ]
         return "\n".join(body)
 
     body = [
-        "Cocomerge restart notice: unfinished sync task must be handled first.",
+        "Cocodex restart notice: unfinished sync task must be handled first.",
         "",
         f"Session: {session.name}",
         f"State: {session.state}",
@@ -316,7 +316,7 @@ def _active_task_notice(repo: Path, session: SessionRecord) -> str:
             "Finish the semantic merge before starting new feature work. If the candidate",
             "is already committed, make sure the validation report exists and run:",
             "",
-            "    cocomerge sync",
+            "    cocodex sync",
             "",
         ]
     )
@@ -326,21 +326,21 @@ def _active_task_notice(repo: Path, session: SessionRecord) -> str:
 def _queued_notice(session: SessionRecord) -> str:
     return textwrap.dedent(
         f"""
-        Cocomerge restart notice: this session already has a sync request queued.
+        Cocodex restart notice: this session already has a sync request queued.
 
         Session: {session.name}
         State: queued
 
         Do not start unrelated feature work yet. Keep this Codex session running
-        and wait for Cocomerge to deliver the sync task. If nothing happens, run
-        `cocomerge status` to check whether the daemon and integration lock are healthy.
+        and wait for Cocodex to deliver the sync task. If nothing happens, run
+        `cocodex status` to check whether the daemon and integration lock are healthy.
         """
     ).lstrip()
 
 
 def _catch_up_clean_join(
     repo: Path,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     db: sqlite3.Connection,
     session: SessionRecord,
 ) -> SessionRecord | None:
@@ -358,10 +358,10 @@ def _catch_up_clean_join(
     return get_session(db, session.name) or session
 
 
-def _caught_up_notice(config: CocomergeConfig, session: SessionRecord) -> str:
+def _caught_up_notice(config: CocodexConfig, session: SessionRecord) -> str:
     return textwrap.dedent(
         f"""
-        Cocomerge restart notice: this session was safely caught up to latest `{config.main_branch}`.
+        Cocodex restart notice: this session was safely caught up to latest `{config.main_branch}`.
 
         Session: {session.name}
 
@@ -382,7 +382,7 @@ def _has_unintegrated_work(session: SessionRecord) -> bool:
 def _local_work_notice(session: SessionRecord) -> str:
     return textwrap.dedent(
         f"""
-        Cocomerge restart notice: this session has local work that is not integrated into main.
+        Cocodex restart notice: this session has local work that is not integrated into main.
 
         Session: {session.name}
         Worktree: {session.worktree}
@@ -390,7 +390,7 @@ def _local_work_notice(session: SessionRecord) -> str:
         Before starting unrelated new work, review the current changes. When the
         feature is ready to integrate, run:
 
-            cocomerge sync
+            cocodex sync
         """
     ).lstrip()
 
@@ -430,7 +430,7 @@ def infer_session_from_cwd(db: sqlite3.Connection, cwd: Path | None = None) -> S
     try:
         worktree = Path(run_git(current, ["rev-parse", "--show-toplevel"])).resolve()
     except GitError as exc:
-        raise RuntimeError("cocomerge sync must run inside a Git worktree") from exc
+        raise RuntimeError("cocodex sync must run inside a Git worktree") from exc
 
     matches = [
         session
@@ -441,10 +441,10 @@ def infer_session_from_cwd(db: sqlite3.Connection, cwd: Path | None = None) -> S
         return matches[0]
     if not matches:
         raise RuntimeError(
-            "Cannot infer Cocomerge session from this directory. "
-            "Run cocomerge sync inside a managed worktree, or pass a session name from the main repository."
+            "Cannot infer Cocodex session from this directory. "
+            "Run cocodex sync inside a managed worktree, or pass a session name from the main repository."
         )
-    raise RuntimeError(f"Multiple Cocomerge sessions match this worktree: {worktree}")
+    raise RuntimeError(f"Multiple Cocodex sessions match this worktree: {worktree}")
 
 
 def send_completion(

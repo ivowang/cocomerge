@@ -60,7 +60,7 @@ jobs:
 
     environment:
       name: pypi
-      url: https://pypi.org/p/cocomerge
+      url: https://pypi.org/p/cocodex
 
     permissions:
       contents: read

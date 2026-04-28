@@ -106,10 +106,10 @@ def force_push_server_refs(repo: Path, remote: str, *, timeout: float = 30.0) ->
         ["push", "--force", "--prune", remote, "+refs/heads/*:refs/heads/*"],
         timeout=timeout,
     )
-    if _has_refs(repo, "refs/cocomerge"):
+    if _has_refs(repo, "refs/cocodex"):
         run_git(
             repo,
-            ["push", "--force", remote, "+refs/cocomerge/*:refs/cocomerge/*"],
+            ["push", "--force", remote, "+refs/cocodex/*:refs/cocodex/*"],
             timeout=timeout,
         )
 

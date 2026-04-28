@@ -1,63 +1,63 @@
-# cocomerge
+# cocodex
 
 [中文说明](docs/README_ZH.md)
 
-cocomerge coordinates multiple Codex sessions that share one Git repository on one
+cocodex coordinates multiple Codex sessions that share one Git repository on one
 server account. It gives every developer an isolated managed worktree, then
 serializes the moment when a developer's work becomes the next `main`.
 
 ## Core Rule
 
-For day-to-day collaboration, a developer only needs one Cocomerge command:
+For day-to-day collaboration, a developer only needs one Cocodex command:
 
 ```bash
-cocomerge sync
+cocodex sync
 ```
 
-`sync` means "move this Cocomerge session to the next safe synchronization
+`sync` means "move this Cocodex session to the next safe synchronization
 state." Depending on the session state, it can:
 
 - fast-forward a clean session to the latest `main`;
 - queue a dirty session for integration;
-- after Cocomerge gives the session a task, publish the committed candidate as
+- after Cocodex gives the session a task, publish the committed candidate as
   the new `main`.
 
 Developers and Codex sessions must not run `git pull main`, `git merge main`,
-or `git push main` directly. Cocomerge is the only writer to local `main`.
+or `git push main` directly. Cocodex is the only writer to local `main`.
 
-If a remote is configured, every `cocomerge sync` also tries to force-sync the
+If a remote is configured, every `cocodex sync` also tries to force-sync the
 server's local branch refs to that remote. The server is treated as the source
 of truth; remote branch differences may be overwritten. Remote sync is
 best-effort: network or authentication failures are reported as warnings and
-retried on later `cocomerge sync` commands.
+retried on later `cocodex sync` commands.
 
 The daemon does not automatically integrate dirty sessions. Local work stays in
 the developer's managed worktree until that developer or their Codex explicitly
-runs `cocomerge sync` from inside that worktree. In Codex, run it as a shell
-command, for example `!cocomerge sync`.
+runs `cocodex sync` from inside that worktree. In Codex, run it as a shell
+command, for example `!cocodex sync`.
 
 ## Roles
 
 Operator/startup commands, run from the project repository:
 
 ```bash
-cocomerge init --main main --remote origin
-cocomerge daemon
-cocomerge join alice
+cocodex init --main main --remote origin
+cocodex daemon
+cocodex join alice
 ```
 
 Developer collaboration command, run from inside that developer's managed
-worktree, usually through Codex as `!cocomerge sync`:
+worktree, usually through Codex as `!cocodex sync`:
 
 ```bash
-cocomerge sync
+cocodex sync
 ```
 
 Inspection commands:
 
 ```bash
-cocomerge status
-cocomerge log
+cocodex status
+cocodex log
 ```
 
 `resume` and `abandon` recovery commands exist for operators, but they are not
@@ -68,7 +68,7 @@ part of the normal developer workflow.
 After the first PyPI release:
 
 ```bash
-pip install cocomerge
+pip install cocodex
 ```
 
 For development from a local checkout:
@@ -77,12 +77,12 @@ For development from a local checkout:
 pip install -e .
 ```
 
-This installs the `cocomerge` console command.
+This installs the `cocodex` console command.
 
 ## Repository Setup
 
 Run these commands in the project repository that the team wants to develop
-with Cocomerge.
+with Cocodex.
 
 The configured main branch must already exist and have an initial commit:
 
@@ -92,31 +92,31 @@ git add .
 git commit -m "initial commit"
 ```
 
-If Cocomerge should keep a remote copy of the server's local branches, add the
+If Cocodex should keep a remote copy of the server's local branches, add the
 remote before initialization:
 
 ```bash
 git remote add origin <url>
 ```
 
-Initialize Cocomerge once:
+Initialize Cocodex once:
 
 ```bash
-cocomerge init --main main --remote origin
+cocodex init --main main --remote origin
 ```
 
-`init` refuses to overwrite an existing `.cocomerge/config.json`, because that
-file contains developer identities and launch commands. Use `cocomerge init
---force` only when you intentionally want to replace the existing Cocomerge
+`init` refuses to overwrite an existing `.cocodex/config.json`, because that
+file contains developer identities and launch commands. Use `cocodex init
+--force` only when you intentionally want to replace the existing Cocodex
 configuration.
 
 Use `--remote origin` only if that remote exists. With a remote configured,
-`cocomerge sync` force-pushes local branch refs to that remote with pruning, so
+`cocodex sync` force-pushes local branch refs to that remote with pruning, so
 the server-side repository remains authoritative. Omit `--remote` for
 local-only coordination.
 
-Before developers join, edit `.cocomerge/config.json` and fill in the top-level
-`developers` object. Keep the other keys that `cocomerge init` wrote; do not
+Before developers join, edit `.cocodex/config.json` and fill in the top-level
+`developers` object. Keep the other keys that `cocodex init` wrote; do not
 replace the whole file with only the developer fragment. A typical config looks
 like this:
 
@@ -135,16 +135,16 @@ like this:
   "dirty_interval_s": 2.0,
   "main_branch": "main",
   "remote": "origin",
-  "socket_path": ".cocomerge/cocomerge.sock",
-  "worktree_root": ".cocomerge/worktrees"
+  "socket_path": ".cocodex/cocodex.sock",
+  "worktree_root": ".cocodex/worktrees"
 }
 ```
 
 Use `"remote": null` if the repository is local-only. The keys under
-`developers` are the only names accepted by `cocomerge join <user_name>`, so
-`cocomerge join alice` requires an `alice` entry.
+`developers` are the only names accepted by `cocodex join <user_name>`, so
+`cocodex join alice` requires an `alice` entry.
 
-`command` is optional per developer; when omitted, Cocomerge starts `codex`. For
+`command` is optional per developer; when omitted, Cocodex starts `codex`. For
 a custom Codex launch, use a JSON string array such as
 `"command": ["codex", "--model", "gpt-5.5"]`.
 
@@ -153,62 +153,62 @@ a custom Codex launch, use a JSON string array such as
 Start one daemon in a long-running terminal from the project repository:
 
 ```bash
-cocomerge daemon
+cocodex daemon
 ```
 
 The daemon prints an operational log in that terminal: session joins, sync
 requests, queue movement, integration lock changes, publish events, remote sync
 failures, and recovery transitions.
 
-Start each Codex session through Cocomerge from that developer's tmux window:
+Start each Codex session through Cocodex from that developer's tmux window:
 
 ```bash
-cocomerge join alice
-cocomerge join bob
+cocodex join alice
+cocodex join bob
 ```
 
 `join` has the same form for first-time use and restart. The developer name
-comes from `.cocomerge/config.json`; Git identity and the Codex launch command
+comes from `.cocodex/config.json`; Git identity and the Codex launch command
 come from the matching config entry.
 
 Each joined session gets:
 
-- a branch named `cocomerge/<name>`;
-- a worktree under `.cocomerge/worktrees/<name>`;
-- a session agent that receives Cocomerge tasks;
+- a branch named `cocodex/<name>`;
+- a worktree under `.cocodex/worktrees/<name>`;
+- a session agent that receives Cocodex tasks;
 - a Git-ignored `AGENTS.md` in that worktree, unless the project already has
   its own `AGENTS.md`.
 
-`join` reads the developer's Git identity from `.cocomerge/config.json` and writes
-it into that worktree's per-worktree Git config, so Cocomerge snapshot commits
+`join` reads the developer's Git identity from `.cocodex/config.json` and writes
+it into that worktree's per-worktree Git config, so Cocodex snapshot commits
 and Codex candidate commits have the right author.
 
-Cocomerge does not automatically infer a tmux pane, because `TMUX_PANE` can leak
+Cocodex does not automatically infer a tmux pane, because `TMUX_PANE` can leak
 through scripts, tests, or nested shells and target the wrong Codex. By default,
-Cocomerge prints the task and prompt file paths when a sync task starts. To paste
+Cocodex prints the task and prompt file paths when a sync task starts. To paste
 sync prompts directly into the Codex pane, opt in explicitly:
 
 ```bash
-cocomerge join --tmux-target "$TMUX_PANE" alice
+cocodex join --tmux-target "$TMUX_PANE" alice
 ```
 
 Only pass `--tmux-target "$TMUX_PANE"` when running `join` from the same tmux
 pane that will host that developer's Codex.
 
-The generated `AGENTS.md` tells Codex that it is in a Cocomerge-managed
+The generated `AGENTS.md` tells Codex that it is in a Cocodex-managed
 collaboration session and that normal synchronization uses only
-`cocomerge sync` from inside the managed worktree.
+`cocodex sync` from inside the managed worktree.
 
 ## Restarting A Session
 
 If a developer closes their Codex window, restart with the same session name:
 
 ```bash
-cocomerge join alice
+cocodex join alice
 ```
 
-Cocomerge reuses `.cocomerge/worktrees/alice` and `cocomerge/alice`. On startup,
-`join` checks for unfinished Cocomerge responsibilities before normal
+Cocodex reuses `.cocodex/worktrees/alice` and `cocodex/alice`. On startup,
+`join` checks for unfinished Cocodex responsibilities before normal
 development continues:
 
 - an active sync task is re-announced with its task and validation file paths;
@@ -219,7 +219,7 @@ development continues:
   unrelated work.
 
 If a restart notice appears, handle that notice before accepting new feature
-work. With an explicit `--tmux-target`, Cocomerge also pastes the restart notice
+work. With an explicit `--tmux-target`, Cocodex also pastes the restart notice
 into the Codex pane.
 
 ## What `sync` Does
@@ -229,10 +229,10 @@ into the Codex pane.
 If Alice has no local work and `main` has advanced, this catches Alice up:
 
 ```bash
-cocomerge sync
+cocodex sync
 ```
 
-If Alice is already current, Cocomerge reports that the session is already
+If Alice is already current, Cocodex reports that the session is already
 synced.
 
 ### Dirty Session
@@ -240,15 +240,15 @@ synced.
 If Alice has local edits or commits, this requests integration:
 
 ```bash
-cocomerge sync
+cocodex sync
 ```
 
-When Alice reaches the front of the queue, Cocomerge:
+When Alice reaches the front of the queue, Cocodex:
 
 1. freezes Alice's session;
 2. snapshots Alice's current work;
 3. resets Alice's worktree to the latest `main`;
-4. writes a task file under `.cocomerge/tasks/`;
+4. writes a task file under `.cocodex/tasks/`;
 5. prints the task file path inside Alice's Codex terminal.
 
 Alice's Codex reads the task file and re-implements or semantically merges
@@ -261,37 +261,37 @@ For each task, Codex designs and runs sufficient validation for the semantic
 merge. That can mean existing tests, new or updated tests, targeted scripts, or
 manual checks when the project has no suitable test framework. Before running
 sync again, Codex writes the requested validation report under
-`.cocomerge/tasks/`. After it commits the final candidate and the worktree is
+`.cocodex/tasks/`. After it commits the final candidate and the worktree is
 clean, it runs the same command again:
 
 ```bash
-cocomerge sync
+cocodex sync
 ```
 
-Cocomerge then requires the validation report, fast-forwards local `main`,
+Cocodex then requires the validation report, fast-forwards local `main`,
 best-effort syncs the configured remote if one exists, and notifies other
 sessions.
 
 If the task cannot be completed safely, Codex should stop and explain the
-blocker in its session output. An operator can inspect `cocomerge status` and
-`cocomerge log` before deciding how to recover.
+blocker in its session output. An operator can inspect `cocodex status` and
+`cocodex log` before deciding how to recover.
 
 ## Normal Example
 
-Alice and Bob both start Codex through Cocomerge. Alice implements feature A; Bob
+Alice and Bob both start Codex through Cocodex. Alice implements feature A; Bob
 implements feature B. Neither branch is integrated automatically.
 
 Alice runs:
 
 ```bash
-!cocomerge sync
+!cocodex sync
 ```
 
-Cocomerge gives Alice's Codex a task. Alice's Codex applies feature A on latest
+Cocodex gives Alice's Codex a task. Alice's Codex applies feature A on latest
 `main`, commits, and runs:
 
 ```bash
-!cocomerge sync
+!cocodex sync
 ```
 
 Now feature A is the new `main`.
@@ -299,14 +299,14 @@ Now feature A is the new `main`.
 Bob later runs:
 
 ```bash
-!cocomerge sync
+!cocodex sync
 ```
 
 Bob's task is based on the current `main`, which already includes feature A.
 Bob's Codex applies feature B on top of that, commits, and runs:
 
 ```bash
-!cocomerge sync
+!cocodex sync
 ```
 
 This gives the team a serial mainline even though the Codex sessions worked
@@ -314,14 +314,14 @@ asynchronously.
 
 ## Safety Behavior
 
-Cocomerge prefers stopping over guessing:
+Cocodex prefers stopping over guessing:
 
 - a dirty session is not integrated until its owner runs `sync`;
 - only one session owns the integration lock at a time;
 - running `sync` before committing a task candidate is rejected;
 - missing or insufficient validation reports keep the task locked so the same
   session can write the report and run `sync` again;
-- remote sync failures do not block local progress; Cocomerge warns and retries
+- remote sync failures do not block local progress; Cocodex warns and retries
   on the next `sync`;
 - unexpected recovery states require operator inspection.
 
@@ -330,36 +330,36 @@ Cocomerge prefers stopping over guessing:
 Normal developer command:
 
 ```bash
-cocomerge sync
+cocodex sync
 ```
 
 Common operator commands:
 
 ```bash
-cocomerge init --main main --remote origin
-cocomerge daemon
-cocomerge join alice
-cocomerge status
-cocomerge log
+cocodex init --main main --remote origin
+cocodex daemon
+cocodex join alice
+cocodex status
+cocodex log
 ```
 
 ## Troubleshooting
 
-`Developer 'alice' is not configured in .cocomerge/config.json`
+`Developer 'alice' is not configured in .cocodex/config.json`
 means the operator has not added an `alice` entry under `developers`, or the
-command is being run from a repository with a different Cocomerge config.
+command is being run from a repository with a different Cocodex config.
 
-`cocomerge sync must run inside a Git worktree` or
-`Run cocomerge sync inside a managed worktree` means the command was not run from
-`.cocomerge/worktrees/<name>`. Start or re-enter the session with
-`cocomerge join <name>`, then run `!cocomerge sync` from that Codex session.
+`cocodex sync must run inside a Git worktree` or
+`Run cocodex sync inside a managed worktree` means the command was not run from
+`.cocodex/worktrees/<name>`. Start or re-enter the session with
+`cocodex join <name>`, then run `!cocodex sync` from that Codex session.
 
-If Cocomerge prints task and prompt file paths instead of pasting into Codex,
+If Cocodex prints task and prompt file paths instead of pasting into Codex,
 that is expected unless the session was started with an explicit
 `--tmux-target`. Read the task file in the session worktree and follow it.
 
 Remote sync warnings are non-fatal. Fix the network or Git authentication
-problem when convenient; Cocomerge retries remote synchronization on later
-`cocomerge sync` commands.
+problem when convenient; Cocodex retries remote synchronization on later
+`cocodex sync` commands.
 
 Implementation details are documented in [docs/DEV.md](docs/DEV.md).

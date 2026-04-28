@@ -24,7 +24,7 @@ class SessionRecord:
 
 
 def connect(repo: Path) -> sqlite3.Connection:
-    db_path = repo / ".cocomerge" / "state.sqlite"
+    db_path = repo / ".cocodex" / "state.sqlite"
     db_path.parent.mkdir(exist_ok=True)
     db = sqlite3.connect(db_path)
     db.row_factory = sqlite3.Row

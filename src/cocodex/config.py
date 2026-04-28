@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 
-CONFIG_PATH = Path(".cocomerge/config.json")
+CONFIG_PATH = Path(".cocodex/config.json")
 DEFAULT_DEVELOPER_COMMAND = ["codex"]
 CONFIG_KEYS = {
     "main_branch",
@@ -20,7 +20,7 @@ CONFIG_KEYS = {
 
 
 @dataclass(frozen=True)
-class CocomergeConfig:
+class CocodexConfig:
     main_branch: str
     remote: str | None
     socket_path: str
@@ -44,7 +44,7 @@ def find_repo_root(start: Path | None = None) -> Path:
     return Path(result.stdout.strip()).resolve()
 
 
-def find_cocomerge_root(start: Path | None = None) -> Path:
+def find_cocodex_root(start: Path | None = None) -> Path:
     cwd = Path.cwd() if start is None else start
     git_root = find_repo_root(cwd)
     candidates = [git_root, *git_root.parents]
@@ -56,7 +56,7 @@ def find_cocomerge_root(start: Path | None = None) -> Path:
     for candidate in candidates:
         if (candidate / CONFIG_PATH).exists():
             return candidate.resolve()
-    raise FileNotFoundError(f"{git_root / CONFIG_PATH} does not exist; run cocomerge init first")
+    raise FileNotFoundError(f"{git_root / CONFIG_PATH} does not exist; run cocodex init first")
 
 
 def _git_common_dir(cwd: Path) -> Path | None:
@@ -81,35 +81,35 @@ def init_config(
     remote: str | None,
     dirty_interval_s: float = 2.0,
     force: bool = False,
-) -> CocomergeConfig:
+) -> CocodexConfig:
     path = repo / CONFIG_PATH
     if path.exists() and not force:
         raise RuntimeError(
-            f"{path} already exists. Cocomerge init refuses to overwrite existing "
+            f"{path} already exists. Cocodex init refuses to overwrite existing "
             "developer configuration; pass --force only if you intend to replace it."
         )
     _validate_main_branch(repo, main_branch)
     _validate_remote(repo, remote)
-    config = CocomergeConfig(
+    config = CocodexConfig(
         main_branch=main_branch,
         remote=remote,
-        socket_path=".cocomerge/cocomerge.sock",
-        worktree_root=".cocomerge/worktrees",
+        socket_path=".cocodex/cocodex.sock",
+        worktree_root=".cocodex/worktrees",
         dirty_interval_s=dirty_interval_s,
         developers={},
     )
-    cocomerge_dir = repo / ".cocomerge"
-    cocomerge_dir.mkdir(exist_ok=True)
+    cocodex_dir = repo / ".cocodex"
+    cocodex_dir.mkdir(exist_ok=True)
     _write_config_atomic(path, config)
-    (cocomerge_dir / "tasks").mkdir(exist_ok=True)
-    (cocomerge_dir / "worktrees").mkdir(exist_ok=True)
+    (cocodex_dir / "tasks").mkdir(exist_ok=True)
+    (cocodex_dir / "worktrees").mkdir(exist_ok=True)
     return config
 
 
-def load_config(repo: Path) -> CocomergeConfig:
+def load_config(repo: Path) -> CocodexConfig:
     path = repo / CONFIG_PATH
     if not path.exists():
-        raise FileNotFoundError(f"{path} does not exist; run cocomerge init first")
+        raise FileNotFoundError(f"{path} does not exist; run cocodex init first")
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise RuntimeError(f"{CONFIG_PATH} must contain a JSON object")
@@ -123,16 +123,16 @@ def load_config(repo: Path) -> CocomergeConfig:
     missing = sorted(CONFIG_KEYS - set(data))
     if missing:
         raise RuntimeError(f"Missing required key(s) in {CONFIG_PATH}: {', '.join(missing)}")
-    return CocomergeConfig(**data)
+    return CocodexConfig(**data)
 
 
-def validate_config(repo: Path, config: CocomergeConfig) -> None:
+def validate_config(repo: Path, config: CocodexConfig) -> None:
     _validate_main_branch(repo, config.main_branch)
     _validate_remote(repo, config.remote)
     _validate_developers(config.developers)
 
 
-def _write_config_atomic(path: Path, config: CocomergeConfig) -> None:
+def _write_config_atomic(path: Path, config: CocodexConfig) -> None:
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(
         json.dumps(asdict(config), indent=2, sort_keys=True) + "\n",
@@ -141,14 +141,14 @@ def _write_config_atomic(path: Path, config: CocomergeConfig) -> None:
     tmp_path.replace(path)
 
 
-def get_developer_identity(config: CocomergeConfig, name: str) -> tuple[str, str]:
+def get_developer_identity(config: CocodexConfig, name: str) -> tuple[str, str]:
     developer = _developer(config, name)
     user_name = _required_string(developer, "git_user_name", name)
     user_email = _required_string(developer, "git_user_email", name)
     return user_name, user_email
 
 
-def get_developer_command(config: CocomergeConfig, name: str) -> list[str]:
+def get_developer_command(config: CocodexConfig, name: str) -> list[str]:
     developer = _developer(config, name)
     command = developer.get("command", DEFAULT_DEVELOPER_COMMAND)
     if not isinstance(command, list) or not command or not all(
@@ -161,17 +161,17 @@ def get_developer_command(config: CocomergeConfig, name: str) -> list[str]:
     return list(command)
 
 
-def has_developer(config: CocomergeConfig, name: str) -> bool:
+def has_developer(config: CocodexConfig, name: str) -> bool:
     return name in config.developers
 
 
-def _developer(config: CocomergeConfig, name: str) -> dict[str, Any]:
+def _developer(config: CocodexConfig, name: str) -> dict[str, Any]:
     try:
         developer = config.developers[name]
     except KeyError as exc:
         raise RuntimeError(
             f"Developer {name!r} is not configured in {CONFIG_PATH}. "
-            "Add it under the 'developers' object before running cocomerge join."
+            "Add it under the 'developers' object before running cocodex join."
         ) from exc
     if not isinstance(developer, dict):
         raise RuntimeError(f"Developer {name!r} in {CONFIG_PATH} must be a JSON object")

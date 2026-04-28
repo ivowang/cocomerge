@@ -8,7 +8,7 @@ RECOVERY_COMMANDS = {"resume", "abandon"}
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cocomerge")
+    parser = argparse.ArgumentParser(prog="cocodex")
     subparsers = parser.add_subparsers(
         dest="command",
         metavar="{init,daemon,join,sync,status,log}",
@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument(
         "--force",
         action="store_true",
-        help="replace an existing .cocomerge/config.json",
+        help="replace an existing .cocodex/config.json",
     )
 
     subparsers.add_parser("daemon")
@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     join_parser.add_argument("session", nargs="?", metavar="user_name")
     join_parser.add_argument(
         "--tmux-target",
-        help="tmux pane that should receive Cocomerge prompts; prompt injection is opt-in",
+        help="tmux pane that should receive Cocodex prompts; prompt injection is opt-in",
     )
 
     subparsers.add_parser("status")
@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_recovery_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="cocomerge")
+    parser = argparse.ArgumentParser(prog="cocodex")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     resume_parser = subparsers.add_parser("resume")
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
     except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
-        print(f"cocomerge: {exc}", file=sys.stderr)
+        print(f"cocodex: {exc}", file=sys.stderr)
         return 1
 
 
@@ -81,14 +81,14 @@ def _main(argv: list[str] | None = None) -> int:
         init_config(repo, main_branch=args.main, remote=args.remote, force=args.force)
         db = connect(repo)
         initialize_schema(db)
-        print(f"Initialized cocomerge in {repo / '.cocomerge'}")
+        print(f"Initialized cocodex in {repo / '.cocodex'}")
         return 0
     if args.command == "daemon":
-        from .config import find_cocomerge_root, load_config, validate_config
+        from .config import find_cocodex_root, load_config, validate_config
         from .daemon import run_daemon
         from .state import connect, initialize_schema
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -99,7 +99,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         from .agent import SessionAgent
         from .config import (
-            find_cocomerge_root,
+            find_cocodex_root,
             get_developer_command,
             get_developer_identity,
             has_developer,
@@ -109,17 +109,17 @@ def _main(argv: list[str] | None = None) -> int:
         from .session import ensure_session_worktree, prepare_join_startup_notice, register_with_daemon
         from .state import connect, initialize_schema
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
         initialize_schema(db)
         session_name = args.session
         if session_name is None:
-            raise RuntimeError("Usage: cocomerge join <user_name>")
+            raise RuntimeError("Usage: cocodex join <user_name>")
         if not has_developer(config, session_name):
             raise RuntimeError(
-                f"Developer {session_name!r} is not configured in .cocomerge/config.json"
+                f"Developer {session_name!r} is not configured in .cocodex/config.json"
             )
         git_user_name, git_user_email = get_developer_identity(config, session_name)
         command = get_developer_command(config, session_name)
@@ -156,11 +156,11 @@ def _main(argv: list[str] | None = None) -> int:
             control_thread.join(timeout=2)
             raise
     if args.command == "status":
-        from .config import find_cocomerge_root, load_config, validate_config
+        from .config import find_cocodex_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_status
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -168,24 +168,24 @@ def _main(argv: list[str] | None = None) -> int:
         print(format_status(repo, db, config), end="")
         return 0
     if args.command == "log":
-        from .config import find_cocomerge_root, load_config, validate_config
+        from .config import find_cocodex_root, load_config, validate_config
         from .state import connect, initialize_schema
         from .status import format_events
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         validate_config(repo, load_config(repo))
         db = connect(repo)
         initialize_schema(db)
         print(format_events(db), end="")
         return 0
     if args.command == "sync":
-        from .config import find_cocomerge_root, load_config, validate_config
+        from .config import find_cocodex_root, load_config, validate_config
         from .protocol import decode_message
         from .session import infer_session_from_cwd, send_completion
         from .state import connect, initialize_schema
         from .transport import send_message
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         config = load_config(repo)
         validate_config(repo, config)
         db = connect(repo)
@@ -204,7 +204,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 0
         socket_path = repo / config.socket_path
         if not socket_path.exists():
-            raise RuntimeError("cocomerge daemon is not running")
+            raise RuntimeError("cocodex daemon is not running")
         raw = send_message(
             socket_path,
             {"type": "ready_to_integrate", "session": session.name},
@@ -225,7 +225,7 @@ def _main(argv: list[str] | None = None) -> int:
             return 0
         raise RuntimeError("Unexpected sync response")
     if args.command == "resume":
-        from .config import find_cocomerge_root, load_config
+        from .config import find_cocodex_root, load_config
         from .state import (
             connect,
             enqueue_session,
@@ -235,7 +235,7 @@ def _main(argv: list[str] | None = None) -> int:
             transition_session,
         )
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -258,7 +258,7 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Resumed {args.session}")
         return 0
     if args.command == "abandon":
-        from .config import find_cocomerge_root, load_config
+        from .config import find_cocodex_root, load_config
         from .state import (
             connect,
             dequeue_session,
@@ -269,7 +269,7 @@ def _main(argv: list[str] | None = None) -> int:
             transition_session,
         )
 
-        repo = find_cocomerge_root()
+        repo = find_cocodex_root()
         load_config(repo)
         db = connect(repo)
         initialize_schema(db)
@@ -312,7 +312,7 @@ def _sync_remote_best_effort(repo, config) -> str | None:
         return None
     return (
         f"remote sync to {config.remote} failed and was skipped; "
-        f"will retry on the next cocomerge sync: {error}"
+        f"will retry on the next cocodex sync: {error}"
     )
 
 
@@ -322,4 +322,4 @@ def _print_remote_sync_errors(errors: list[str | None]) -> None:
         if error is None or error in seen:
             continue
         seen.add(error)
-        print(f"cocomerge: warning: {error}", file=sys.stderr)
+        print(f"cocodex: warning: {error}", file=sys.stderr)

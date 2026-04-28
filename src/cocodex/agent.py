@@ -5,14 +5,14 @@ import threading
 import time
 from pathlib import Path
 
-from .config import CocomergeConfig
+from .config import CocodexConfig
 from .protocol import ProtocolError, decode_message
 from .state import SessionRecord
 from .transport import send_message, serve_forever
 
 
-def control_socket_path(repo: Path, config: CocomergeConfig, session: str) -> Path:
-    return repo / ".cocomerge" / "sessions" / f"{session}.sock"
+def control_socket_path(repo: Path, config: CocodexConfig, session: str) -> Path:
+    return repo / ".cocodex" / "sessions" / f"{session}.sock"
 
 
 class SessionAgent:
@@ -20,7 +20,7 @@ class SessionAgent:
         self,
         *,
         repo: Path,
-        config: CocomergeConfig,
+        config: CocodexConfig,
         record: SessionRecord,
         command: list[str],
         tmux_target: str | None = None,
@@ -92,15 +92,15 @@ class SessionAgent:
             task_file = message["task_file"]
             prompt = build_sync_prompt(self.record.name, Path(task_file))
             prompt_path = write_prompt_file(Path(task_file), prompt)
-            print(f"Cocomerge task for {self.record.name}: {task_file}", flush=True)
-            print(f"Cocomerge prompt for {self.record.name}: {prompt_path}", flush=True)
+            print(f"Cocodex task for {self.record.name}: {task_file}", flush=True)
+            print(f"Cocodex prompt for {self.record.name}: {prompt_path}", flush=True)
             response = {"type": "ack", "session": self.record.name, "task_id": task_id}
             if self.tmux_target:
                 try:
                     send_prompt_to_tmux(self.tmux_target, prompt, session=self.record.name)
                     response["prompt_injected"] = True
                 except RuntimeError as exc:
-                    print(f"Cocomerge prompt injection failed: {exc}", flush=True)
+                    print(f"Cocodex prompt injection failed: {exc}", flush=True)
                     response["prompt_injected"] = False
                     response["prompt_error"] = str(exc)
             return response
@@ -138,7 +138,7 @@ class SessionAgent:
         try:
             send_prompt_to_tmux(self.tmux_target, self.startup_prompt, session=self.record.name)
         except RuntimeError as exc:
-            print(f"Cocomerge startup prompt injection failed: {exc}", flush=True)
+            print(f"Cocodex startup prompt injection failed: {exc}", flush=True)
 
 
 def wait_for_control_socket(socket_path: Path, session: str, *, timeout: float = 2.0) -> None:
@@ -159,7 +159,7 @@ def build_sync_prompt(session: str, task_file: Path) -> str:
     validation_file = task_file.with_name(task_file.stem + ".validation.md")
     return "\n".join(
         [
-            "Cocomerge sync task is ready.",
+            "Cocodex sync task is ready.",
             "",
             f"Session: {session}",
             f"Task file: {task_file}",
@@ -167,7 +167,7 @@ def build_sync_prompt(session: str, task_file: Path) -> str:
             "",
             "If this arrives while you are working on another request, first choose a",
             "safe pause point and preserve that request's remaining intent in your",
-            "session output or notes. Complete this Cocomerge task, then continue the",
+            "session output or notes. Complete this Cocodex task, then continue the",
             "paused work after sync succeeds.",
             "",
             "Read the task file now. Treat the current worktree as the latest main branch.",
@@ -179,7 +179,7 @@ def build_sync_prompt(session: str, task_file: Path) -> str:
             "2. commit the final candidate with this session's configured Git identity;",
             "3. ensure the worktree is clean;",
             "4. write the validation report requested by the task file;",
-            "5. run `cocomerge sync` again from this worktree so Cocomerge can publish it",
+            "5. run `cocodex sync` again from this worktree so Cocodex can publish it",
             "and best-effort sync remote refs.",
             "",
             "If you cannot complete the task safely, stop and explain the blocker in this",
@@ -197,7 +197,7 @@ def write_prompt_file(task_file: Path, prompt: str) -> Path:
 
 def send_prompt_to_tmux(target: str, prompt: str, *, session: str) -> None:
     safe_session = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in session)
-    buffer_name = f"cocomerge-{safe_session}"
+    buffer_name = f"cocodex-{safe_session}"
     load = subprocess.run(
         ["tmux", "load-buffer", "-b", buffer_name, "-"],
         input=prompt,
@@ -230,7 +230,7 @@ def send_prompt_to_tmux(target: str, prompt: str, *, session: str) -> None:
 
 def run_agent(
     repo: Path,
-    config: CocomergeConfig,
+    config: CocodexConfig,
     record: SessionRecord,
     command: list[str],
     *,
