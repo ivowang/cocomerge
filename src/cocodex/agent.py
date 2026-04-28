@@ -104,12 +104,6 @@ class SessionAgent:
                     response["prompt_injected"] = False
                     response["prompt_error"] = str(exc)
             return response
-        if message_type == "main_updated":
-            return {
-                "type": "ack",
-                "session": self.record.name,
-                "main_commit": message.get("main_commit"),
-            }
         if message_type == "shutdown":
             self.stop_event.set()
             return {"type": "ack", "session": self.record.name}

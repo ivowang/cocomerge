@@ -6,7 +6,7 @@ import textwrap
 from pathlib import Path
 
 from .config import CocodexConfig
-from .git import GitError, create_worktree, current_head, fast_forward_ref, is_dirty, run_git
+from .git import GitError, create_worktree, current_head, is_dirty, run_git
 from .protocol import ProtocolError, decode_message
 from .state import (
     SessionRecord,
@@ -15,7 +15,6 @@ from .state import (
     list_sessions,
     register_session,
     transition_session,
-    update_last_seen_main,
 )
 from .tasks import task_file_path, validation_file_path
 from .transport import send_message
@@ -224,9 +223,9 @@ def prepare_join_startup_notice(
     if refreshed.state == "queued":
         return refreshed, _queued_notice(refreshed)
 
-    caught_up = _catch_up_clean_join(repo, config, db, refreshed)
-    if caught_up is not None:
-        return caught_up, _caught_up_notice(config, caught_up)
+    clean_behind_notice = _clean_behind_main_notice(repo, config, refreshed)
+    if clean_behind_notice is not None:
+        return refreshed, clean_behind_notice
 
     if _has_unintegrated_work(refreshed):
         return refreshed, _local_work_notice(refreshed)
@@ -338,12 +337,11 @@ def _queued_notice(session: SessionRecord) -> str:
     ).lstrip()
 
 
-def _catch_up_clean_join(
+def _clean_behind_main_notice(
     repo: Path,
     config: CocodexConfig,
-    db: sqlite3.Connection,
     session: SessionRecord,
-) -> SessionRecord | None:
+) -> str | None:
     if session.state != "clean" or session.last_seen_main is None:
         return None
     worktree = Path(session.worktree)
@@ -353,19 +351,16 @@ def _catch_up_clean_join(
     latest_main = current_head(repo, config.main_branch)
     if head != session.last_seen_main or head == latest_main:
         return None
-    fast_forward_ref(worktree, session.branch, latest_main)
-    update_last_seen_main(db, session.name, latest_main)
-    return get_session(db, session.name) or session
-
-
-def _caught_up_notice(config: CocodexConfig, session: SessionRecord) -> str:
     return textwrap.dedent(
         f"""
-        Cocodex restart notice: this session was safely caught up to latest `{config.main_branch}`.
+        Cocodex restart notice: this clean session is behind latest `{config.main_branch}`.
 
         Session: {session.name}
+        Current session commit: {head}
+        Latest main commit: {latest_main}
 
-        You can continue normal development from the managed worktree.
+        Cocodex has not modified this worktree. Run `cocodex sync` from this
+        managed worktree when you want to fast-forward to latest `{config.main_branch}`.
         """
     ).lstrip()
 

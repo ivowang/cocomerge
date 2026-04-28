@@ -25,7 +25,6 @@ KNOWN_TYPES = TASK_MESSAGE_TYPES | {
     "queued",
     "ready_to_integrate",
     "shutdown",
-    "main_updated",
     "error",
 }
 
@@ -60,8 +59,6 @@ def validate_message(message: dict[str, Any]) -> None:
         raise ProtocolError(f"{message_type} requires task_id")
     if message_type == "start_fusion" and not message.get("task_file"):
         raise ProtocolError("start_fusion requires task_file")
-    if message_type == "main_updated" and not message.get("main_commit"):
-        raise ProtocolError("main_updated requires main_commit")
     if message_type in {"register", "heartbeat", "ready_to_integrate", "shutdown"}:
         if not message.get("session"):
             raise ProtocolError(f"{message_type} requires session")

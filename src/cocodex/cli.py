@@ -191,11 +191,11 @@ def _main(argv: list[str] | None = None) -> int:
         db = connect(repo)
         initialize_schema(db)
         session = infer_session_from_cwd(db)
-        remote_errors = [_sync_remote_best_effort(repo, config)]
+        remote_errors = [_sync_remote_best_effort(repo, config, session)]
         if session.active_task is not None:
             if session.state in {"fusing", "blocked", "recovery_required"}:
                 response = send_completion(repo / config.socket_path, session)
-                remote_errors.append(_sync_remote_best_effort(repo, config))
+                remote_errors.append(_sync_remote_best_effort(repo, config, session))
                 print(_format_sync_completion_response(response, session))
                 _print_remote_sync_errors(remote_errors)
                 return 0 if response.get("type") == "ack" else 1
@@ -218,7 +218,7 @@ def _main(argv: list[str] | None = None) -> int:
             _print_remote_sync_errors(remote_errors)
             return 0
         if response.get("type") == "ack" and response.get("session") == session.name:
-            remote_errors.append(_sync_remote_best_effort(repo, config))
+            remote_errors.append(_sync_remote_best_effort(repo, config, session))
             message = response.get("message") or "no changes to sync"
             print(f"{session.name}: {message}")
             _print_remote_sync_errors(remote_errors)
@@ -312,10 +312,15 @@ def _format_sync_completion_response(response: dict, session) -> str:
     raise RuntimeError("Unexpected sync completion response")
 
 
-def _sync_remote_best_effort(repo, config) -> str | None:
-    from .git import try_force_push_server_refs
+def _sync_remote_best_effort(repo, config, session) -> str | None:
+    from .git import try_force_push_session_refs
 
-    error = try_force_push_server_refs(repo, config.remote)
+    error = try_force_push_session_refs(
+        repo,
+        config.remote,
+        main_branch=config.main_branch,
+        session_branch=session.branch,
+    )
     if error is None:
         return None
     return (

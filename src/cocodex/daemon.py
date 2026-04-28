@@ -18,7 +18,7 @@ from .git import (
     is_dirty,
     merge_base_is_ancestor,
     reset_hard,
-    try_force_push_server_refs,
+    try_force_push_session_refs,
     update_ref,
 )
 from .state import (
@@ -339,7 +339,6 @@ def publish_without_fusion_if_current(
     config: CocodexConfig,
     session: SessionRecord,
     *,
-    send_control: ControlSender | None = None,
     task_id_factory: TaskIdFactory = create_task_id,
 ) -> str | None:
     if session.last_seen_main is None or get_lock(db) is not None:
@@ -428,9 +427,12 @@ def publish_without_fusion_if_current(
     finally:
         _release_lock_if_owned(db, session.name, task_id)
 
-    fast_forward_clean_sessions(repo, db, config, candidate)
-    broadcast_main_updated(db, candidate, send_control=send_control or send_control_message)
-    remote_error = try_force_push_server_refs(repo, config.remote)
+    remote_error = try_force_push_session_refs(
+        repo,
+        config.remote,
+        main_branch=config.main_branch,
+        session_branch=session.branch,
+    )
     if remote_error is not None:
         record_event(
             db,
@@ -529,64 +531,6 @@ def send_control_message(session: SessionRecord, message: dict) -> dict:
     return decode_message(raw)
 
 
-def fast_forward_clean_sessions(
-    repo: Path,
-    db: sqlite3.Connection,
-    config: CocodexConfig,
-    main_commit: str,
-) -> None:
-    for session in list_sessions(db):
-        if session.state != "clean" or session.active_task is not None:
-            continue
-
-        worktree = Path(session.worktree)
-        try:
-            if is_dirty(worktree):
-                continue
-            head = current_head(worktree)
-            if session.last_seen_main and head != session.last_seen_main:
-                continue
-            if head == main_commit and session.last_seen_main == main_commit:
-                continue
-            fast_forward_ref(worktree, session.branch, main_commit)
-            update_last_seen_main(db, session.name, main_commit)
-        except Exception as exc:
-            reason = f"clean fast-forward failed: {exc}"
-            transition_session(
-                db,
-                session.name,
-                "recovery_required",
-                reason=reason,
-                blocked_reason=str(exc),
-            )
-
-
-def broadcast_main_updated(
-    db: sqlite3.Connection,
-    main_commit: str,
-    *,
-    send_control: ControlSender = send_control_message,
-) -> None:
-    for session in list_sessions(db):
-        if not session.connected or not session.control_socket:
-            continue
-        try:
-            response = send_control(
-                session,
-                {"type": "main_updated", "session": session.name, "main_commit": main_commit},
-            )
-        except Exception as exc:
-            reason = str(exc) or exc.__class__.__name__
-            mark_session_disconnected(db, session.name, reason)
-            continue
-        if response.get("type") == "error":
-            mark_session_disconnected(db, session.name, response.get("message", "main_updated failed"))
-            continue
-        if not _main_update_response_matches(response, session.name, main_commit):
-            reason = response.get("message") or response.get("reason") or "main_updated ack mismatch"
-            mark_session_disconnected(db, session.name, reason)
-
-
 def process_queue_once(
     repo: Path,
     db: sqlite3.Connection,
@@ -616,7 +560,6 @@ def process_queue_once(
             db,
             config,
             session,
-            send_control=send_control,
             task_id_factory=task_id_factory,
         )
         if direct_message is not None:
@@ -923,9 +866,12 @@ def publish_candidate(
     transition_session(db, session_name, "clean", reason="published", active_task=None)
     update_last_seen_main(db, session_name, candidate)
     _release_lock_if_owned(db, session_name, task_id)
-    fast_forward_clean_sessions(repo, db, config, candidate)
-    broadcast_main_updated(db, candidate, send_control=send_control)
-    remote_error = try_force_push_server_refs(repo, config.remote)
+    remote_error = try_force_push_session_refs(
+        repo,
+        config.remote,
+        main_branch=config.main_branch,
+        session_branch=session.branch,
+    )
     if remote_error is not None:
         record_event(
             db,
@@ -999,14 +945,6 @@ def _control_response_matches(
         response.get("type") == expected_type
         and response.get("session") == session_name
         and response.get("task_id") == task_id
-    )
-
-
-def _main_update_response_matches(response: dict, session_name: str, main_commit: str) -> bool:
-    return (
-        response.get("type") == "ack"
-        and response.get("session") == session_name
-        and response.get("main_commit") == main_commit
     )
 
 

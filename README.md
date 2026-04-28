@@ -18,18 +18,19 @@ cocodex sync
 state." Depending on the session state, it can:
 
 - fast-forward a clean session to the latest `main`;
-- queue a dirty session for integration;
+- publish a dirty session directly when it is already based on latest `main`;
+- queue a dirty session for integration when `main` has advanced;
 - after Cocodex gives the session a task, publish the committed candidate as
   the new `main`.
 
 Developers and Codex sessions must not run `git pull main`, `git merge main`,
 or `git push main` directly. Cocodex is the only writer to local `main`.
 
-If a remote is configured, every `cocodex sync` also tries to force-sync the
-server's local branch refs to that remote. The server is treated as the source
-of truth; remote branch differences may be overwritten. Remote sync is
-best-effort: network or authentication failures are reported as warnings and
-retried on later `cocodex sync` commands.
+If a remote is configured, every `cocodex sync` also tries to force-sync local
+`main` and the current session branch to that remote. It does not push or prune
+other developers' branches. Remote sync is best-effort: network or
+authentication failures are reported as warnings and retried on later
+`cocodex sync` commands.
 
 The daemon does not automatically integrate dirty sessions. Local work stays in
 the developer's managed worktree until that developer or their Codex explicitly
@@ -111,9 +112,8 @@ file contains developer identities and launch commands. Use `cocodex init
 configuration.
 
 Use `--remote origin` only if that remote exists. With a remote configured,
-`cocodex sync` force-pushes local branch refs to that remote with pruning, so
-the server-side repository remains authoritative. Omit `--remote` for
-local-only coordination.
+`cocodex sync` force-pushes local `main` and the current session branch to that
+remote. Omit `--remote` for local-only coordination.
 
 Before developers join, edit `.cocodex/config.json` and fill in the top-level
 `developers` object. Keep the other keys that `cocodex init` wrote; do not
@@ -217,7 +217,7 @@ development continues:
 - an active sync task is re-announced with its task and validation file paths;
 - a safely recoverable interrupted task is moved back to `fusing`;
 - a queued sync request is reported so Codex waits for the task;
-- a clean session that only fell behind `main` is fast-forwarded;
+- a clean session that only fell behind `main` is reported, but not moved;
 - local unintegrated work is reported so Codex reviews it before starting
   unrelated work.
 
@@ -282,9 +282,9 @@ clean, it runs the same command again:
 cocodex sync
 ```
 
-Cocodex then requires the validation report, fast-forwards local `main`,
-best-effort syncs the configured remote if one exists, and notifies other
-sessions.
+Cocodex then requires the validation report, fast-forwards local `main`, and
+best-effort syncs the configured remote if one exists. Other session worktrees
+are not moved or notified as part of this publish.
 
 If the task cannot be completed safely, Codex should stop and explain the
 blocker in its session output. An operator can inspect `cocodex status` and
@@ -333,6 +333,8 @@ asynchronously.
 Cocodex prefers stopping over guessing:
 
 - a dirty session is not integrated until its owner runs `sync`;
+- one session's `sync` never fast-forwards another session's worktree;
+- remote sync only force-pushes local `main` and the current session branch;
 - only one session owns the integration lock at a time;
 - running `sync` before committing a task candidate is rejected;
 - missing or insufficient validation reports keep the task locked so the same

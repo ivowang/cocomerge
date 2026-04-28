@@ -34,7 +34,8 @@ uses `tmux load-buffer`, `paste-buffer`, and `send-keys Enter`.
 `src/cocodex/config.py`. The public config schema is:
 
 - `main_branch`: local branch Cocodex is allowed to publish.
-- `remote`: optional remote name for best-effort server-ref sync.
+- `remote`: optional remote name for best-effort scoped sync of `main_branch`
+  and the current session branch.
 - `socket_path`: daemon Unix socket path.
 - `worktree_root`: root for managed session worktrees.
 - `dirty_interval_s`: retained timing knob for daemon polling.
@@ -80,9 +81,10 @@ Internally, `sync` maps to different protocol actions:
 
 Before the protocol action, and again after successful local catch-up or
 publish paths, the CLI attempts a best-effort remote sync when `config.remote`
-is set. This force-pushes/prunes local `refs/heads/*` to the remote and also
-pushes Cocodex's internal `refs/cocodex/*` namespace when it exists. Failures
-or timeouts only produce warnings; they must not change the sync exit status.
+is set. This force-pushes only local `main_branch` and the current session
+branch to the remote. It does not push, prune, or fast-forward other developer
+branches. Failures or timeouts only produce warnings; they must not change the
+sync exit status.
 
 `resume` and `abandon` are operator recovery commands. They are intentionally
 kept out of the top-level help and are not part of the normal developer
@@ -97,6 +99,10 @@ uncommitted changes, Cocodex creates a snapshot commit with the session's
 configured Git identity, then fast-forwards local `main`. If another session
 publishes first, this condition becomes false and the later session goes
 through the normal semantic fusion path.
+
+No publish path fast-forwards clean idle sessions. Other developers' worktrees
+move only when those developers run `cocodex sync` from their own managed
+worktree.
 
 `join <name>` resolves the developer from `config.developers[name]`. Cocodex
 uses that entry's `git_user_name` and `git_user_email`, enables Git
@@ -120,7 +126,8 @@ the session command. This makes restart behavior explicit:
 - recoverable `recovery_required` active tasks with an existing task file and
   matching integration lock are moved back to `fusing`;
 - queued sync requests produce a wait-for-task notice;
-- clean sessions that are only behind `main` are fast-forwarded;
+- clean sessions that are only behind `main` produce a catch-up notice without
+  moving the worktree;
 - local unintegrated work produces a review-before-new-work notice.
 
 `SessionAgent` prints this startup notice after the child command starts. If a
@@ -196,7 +203,6 @@ Daemon to session:
 - `freeze`: ask the agent to stop accepting new work for this integration
   window.
 - `start_fusion`: tell the agent to show the generated task file path.
-- `main_updated`: notify the session that local `main` advanced.
 
 `src/cocodex/protocol.py` validates message shape, and
 `src/cocodex/transport.py` implements JSONL socket transport.
@@ -238,19 +244,18 @@ It checks:
 - validation did not coincide with `HEAD` changes or dirty the worktree;
 - local `main` can fast-forward to the candidate.
 
-After local publish, Cocodex records `last_observed_main`, marks the session
-clean, releases the lock, fast-forwards clean idle sessions, and broadcasts the
-main update. If a remote is configured, Cocodex then attempts a best-effort
-server-ref sync. Remote failure after local publish is non-fatal: Cocodex
-records a `remote_sync_failed` event and retries on later `sync` commands.
+After local publish, Cocodex records `last_observed_main`, marks the publishing
+session clean, and releases the lock. Other session worktrees are not moved or
+notified. If a remote is configured, Cocodex then attempts a best-effort scoped
+remote sync for `main_branch` and the publishing session branch. Remote failure
+after local publish is non-fatal: Cocodex records a `remote_sync_failed` event
+and retries on later `sync` commands.
 
 On successful publish, Cocodex:
 
 1. marks the session clean;
 2. updates `last_seen_main`;
-3. releases the lock;
-4. fast-forwards clean idle sessions;
-5. broadcasts `main_updated`.
+3. releases the lock.
 
 ## Recovery Semantics
 

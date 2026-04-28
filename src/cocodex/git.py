@@ -100,43 +100,48 @@ def push(repo: Path, remote: str, ref: str) -> None:
     push_ref(repo, remote, ref, ref)
 
 
-def force_push_server_refs(repo: Path, remote: str, *, timeout: float = 30.0) -> None:
+def force_push_session_refs(
+    repo: Path,
+    remote: str,
+    *,
+    main_branch: str,
+    session_branch: str,
+    timeout: float = 30.0,
+) -> None:
     run_git(
         repo,
-        ["push", "--force", "--prune", remote, "+refs/heads/*:refs/heads/*"],
+        [
+            "push",
+            "--force",
+            remote,
+            f"+refs/heads/{main_branch}:refs/heads/{main_branch}",
+            f"+refs/heads/{session_branch}:refs/heads/{session_branch}",
+        ],
         timeout=timeout,
     )
-    if _has_refs(repo, "refs/cocodex"):
-        run_git(
-            repo,
-            ["push", "--force", remote, "+refs/cocodex/*:refs/cocodex/*"],
-            timeout=timeout,
-        )
 
 
-def try_force_push_server_refs(
+def try_force_push_session_refs(
     repo: Path,
     remote: str | None,
     *,
+    main_branch: str,
+    session_branch: str,
     timeout: float = 30.0,
 ) -> str | None:
     if remote is None:
         return None
     try:
-        force_push_server_refs(repo, remote, timeout=timeout)
+        force_push_session_refs(
+            repo,
+            remote,
+            main_branch=main_branch,
+            session_branch=session_branch,
+            timeout=timeout,
+        )
     except Exception as exc:
         return str(exc)
     return None
-
-
-def _has_refs(repo: Path, namespace: str) -> bool:
-    return bool(
-        run_git(
-            repo,
-            ["for-each-ref", "--format=%(refname)", namespace],
-            check=False,
-        )
-    )
 
 
 def add_all(repo: Path) -> None:
