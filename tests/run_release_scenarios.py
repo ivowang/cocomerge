@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import configparser
 import json
 import os
 import shutil
@@ -21,6 +22,12 @@ SOURCE = Path(__file__).resolve().parents[1]
 TEST_ROOT = Path(os.environ.get("COCODEX_TEST_ROOT", Path.home() / "coconut-tests"))
 RUN_ROOT = TEST_ROOT / time.strftime("run-%Y%m%d-%H%M%S")
 PYTHONPATH = str(SOURCE / "src")
+
+
+def package_version() -> str:
+    config = configparser.ConfigParser()
+    config.read(SOURCE / "setup.cfg")
+    return config["metadata"]["version"]
 
 
 @dataclass
@@ -403,7 +410,7 @@ def test_package_metadata(h: Harness) -> None:
         entry_name = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
         metadata = zf.read(metadata_name).decode("utf-8")
         entries = zf.read(entry_name).decode("utf-8")
-    h.require("Name: cocodex" in metadata and "Version: 0.1.0" in metadata, "wheel metadata has name/version")
+    h.require("Name: cocodex" in metadata and f"Version: {package_version()}" in metadata, "wheel metadata has name/version")
     h.require("cocodex = cocodex.cli:main" in entries, "wheel exposes cocodex console script")
     h.run(
         "package: install wheel with prefix",
