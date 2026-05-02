@@ -299,6 +299,13 @@ def set_developer_command(repo: Path, session: str, command: list[str]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def set_config_remote(repo: Path, remote: str | None) -> None:
+    path = repo / ".cocodex" / "config.json"
+    data = json.loads(read(path))
+    data["remote"] = remote
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def make_repo(h: Harness, name: str, *, remote: bool = False, interval: float = 0.5) -> Path:
     repo = RUN_ROOT / name
     repo.mkdir(parents=True)
@@ -439,7 +446,10 @@ def test_package_metadata(h: Harness) -> None:
 def test_init_status_config_join(h: Harness) -> None:
     repo = make_repo(h, "init-status-config")
     status = h.run("init/status: status after init", h.cocodex("status"), repo)
-    h.require("lock: free" in status.stdout and "queue: empty" in status.stdout, "status works after init")
+    h.require(
+        "remote: none" in status.stdout and "lock: free" in status.stdout and "queue: empty" in status.stdout,
+        "status works after init and shows remote config",
+    )
     help_result = h.run("join: help hides legacy flags", h.cocodex("join", "--help"), repo)
     hidden = ["--name", "--git-user-name", "--git-user-email", "--no-auto-prompt"]
     h.require(all(flag not in help_result.stdout for flag in hidden), "join help hides legacy flags")
@@ -614,6 +624,87 @@ def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     h.terminate(daemon, "dirty-publish-daemon")
 
 
+def test_configured_remote_pushes_main_and_session_refs(h: Harness) -> None:
+    repo = make_repo(h, "remote-push")
+    remote_repo = RUN_ROOT / "remote-push-origin.git"
+    git(h, "remote push: init bare origin", remote_repo.parent, "init", "--bare", str(remote_repo))
+    git(h, "remote push: add origin", repo, "remote", "add", "origin", str(remote_repo))
+    set_config_remote(repo, "origin")
+    daemon = start_daemon(h, repo, "remote-push")
+    join = start_join(h, repo, "alice", "remote-push-alice-join")
+    worktree = repo / ".cocodex" / "worktrees" / "alice"
+
+    status = h.run("remote push: status shows configured remote", h.cocodex("status"), repo)
+    h.require("remote: origin" in status.stdout, "status shows configured remote")
+    write(worktree / "remote.txt", "remote publish feature\n")
+    published = h.run("remote push: direct publish pushes refs", h.cocodex("sync"), worktree, timeout=60)
+    h.require("published directly" in published.stdout, "direct publish with configured remote succeeds")
+    main_head = head(repo, "main")
+    session_head = head(worktree)
+    remote_main = git(h, "remote push: remote main ref", remote_repo, "rev-parse", "refs/heads/main").stdout.strip()
+    remote_session = git(h, "remote push: remote session ref", remote_repo, "rev-parse", "refs/heads/cocodex/alice").stdout.strip()
+    h.require(remote_main == main_head, "configured remote receives local main")
+    h.require(remote_session == session_head, "configured remote receives current session branch")
+
+    h.terminate(join, "remote-push-alice-join")
+    h.terminate(daemon, "remote-push-daemon")
+
+
+def test_direct_publish_blocked_by_dirty_main_can_resume(h: Harness) -> None:
+    repo = make_repo(h, "direct-publish-recovery")
+    daemon = start_daemon(h, repo, "direct-publish-recovery")
+    join = start_join(h, repo, "alice", "direct-publish-recovery-alice-join")
+    worktree = repo / ".cocodex" / "worktrees" / "alice"
+    original_main = head(repo, "main")
+
+    write(repo / ".python-version", "dirty-main\n")
+    write(worktree / ".python-version", "3.12\n")
+    failed = h.run(
+        "direct publish recovery: dirty main blocks publish",
+        h.cocodex("sync"),
+        worktree,
+        check=False,
+        timeout=60,
+    )
+    h.require(failed.returncode != 0, "dirty main direct publish reports failure")
+    h.require(head(repo, "main") == original_main, "blocked direct publish does not move main")
+    row = session_row(repo, "alice")
+    h.require(
+        row is not None
+        and row["state"] == "blocked"
+        and row["active_task"] is None
+        and "direct publish failed" in (row["blocked_reason"] or ""),
+        "blocked direct publish leaves session resumable instead of stuck publishing",
+    )
+    assert_single_lock_owner(h, repo, None, "lock released after blocked direct publish")
+    blocked_sync = h.run(
+        "direct publish recovery: blocked sync explains resume",
+        h.cocodex("sync"),
+        worktree,
+        check=False,
+        timeout=60,
+    )
+    h.require(
+        blocked_sync.returncode != 0 and "cocodex resume alice" in blocked_sync.stdout,
+        "blocked session sync explains operator resume command",
+    )
+    h.run("direct publish recovery: premature resume while still blocked", h.cocodex("resume", "alice"), repo, timeout=60)
+    h.wait_for(
+        "direct publish recovery premature resume re-blocks",
+        lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "blocked",
+        timeout=5,
+    )
+    h.require(daemon.poll() is None, "premature resume does not stop daemon")
+
+    (repo / ".python-version").unlink()
+    h.run("direct publish recovery: resume blocked session", h.cocodex("resume", "alice"), repo, timeout=60)
+    h.wait_for("direct publish recovery clean", lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "clean", timeout=20)
+    h.require(head(repo, "main") == head(worktree), "resumed direct publish advances main")
+
+    h.terminate(join, "direct-publish-recovery-alice-join")
+    h.terminate(daemon, "direct-publish-recovery-daemon")
+
+
 def test_two_dirty_sessions_queue_lock(h: Harness) -> None:
     repo = make_repo(h, "queue-lock")
     daemon = start_daemon(h, repo, "queue-lock")
@@ -753,6 +844,8 @@ def main() -> int:
         test_package_metadata(h)
         test_init_status_config_join(h)
         test_clean_sync_and_dirty_publish(h)
+        test_configured_remote_pushes_main_and_session_refs(h)
+        test_direct_publish_blocked_by_dirty_main_can_resume(h)
         test_two_dirty_sessions_queue_lock(h)
         test_join_restart_notices(h)
     finally:

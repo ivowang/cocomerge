@@ -368,62 +368,74 @@ def publish_without_fusion_if_current(
     task_id = task_id_factory(session.name)
     set_lock(db, owner=session.name, task_id=task_id)
     try:
-        latest_main = current_head(repo, config.main_branch)
-        if latest_main != session.last_seen_main:
+        try:
+            latest_main = current_head(repo, config.main_branch)
+            if latest_main != session.last_seen_main:
+                transition_session(
+                    db,
+                    session.name,
+                    "queued",
+                    reason="main advanced before direct publish",
+                    active_task=None,
+                )
+                return None
+
             transition_session(
                 db,
                 session.name,
-                "queued",
-                reason="main advanced before direct publish",
-                active_task=None,
+                "publishing",
+                reason="direct publish without fusion",
+                active_task=task_id,
             )
-            return None
+            if is_dirty(worktree):
+                add_all(worktree)
+                candidate = commit(worktree, f"cocodex direct publish: {session.name}")
+            else:
+                candidate = head
 
-        transition_session(
-            db,
-            session.name,
-            "publishing",
-            reason="direct publish without fusion",
-            active_task=task_id,
-        )
-        if is_dirty(worktree):
-            add_all(worktree)
-            candidate = commit(worktree, f"cocodex direct publish: {session.name}")
-        else:
-            candidate = head
+            if candidate == latest_main:
+                transition_session(
+                    db,
+                    session.name,
+                    "clean",
+                    reason="sync requested with no changes",
+                    active_task=None,
+                )
+                update_last_seen_main(db, session.name, latest_main)
+                return "already synced"
 
-        if candidate == latest_main:
+            current_main = current_head(repo, config.main_branch)
+            if current_main != latest_main or not merge_base_is_ancestor(repo, current_main, candidate):
+                transition_session(
+                    db,
+                    session.name,
+                    "queued",
+                    reason="main advanced before direct publish",
+                    active_task=None,
+                )
+                return None
+
+            fast_forward_ref(repo, config.main_branch, candidate)
+            set_metadata(db, "last_observed_main", candidate)
             transition_session(
                 db,
                 session.name,
                 "clean",
-                reason="sync requested with no changes",
+                reason="published without fusion",
                 active_task=None,
             )
-            update_last_seen_main(db, session.name, latest_main)
-            return "already synced"
-
-        current_main = current_head(repo, config.main_branch)
-        if current_main != latest_main or not merge_base_is_ancestor(repo, current_main, candidate):
+            update_last_seen_main(db, session.name, candidate)
+        except Exception as exc:
+            reason = f"direct publish failed: {exc}"
             transition_session(
                 db,
                 session.name,
-                "queued",
-                reason="main advanced before direct publish",
+                "blocked",
+                reason=reason,
                 active_task=None,
+                blocked_reason=reason,
             )
-            return None
-
-        fast_forward_ref(repo, config.main_branch, candidate)
-        set_metadata(db, "last_observed_main", candidate)
-        transition_session(
-            db,
-            session.name,
-            "clean",
-            reason="published without fusion",
-            active_task=None,
-        )
-        update_last_seen_main(db, session.name, candidate)
+            raise RuntimeError(reason) from exc
     finally:
         _release_lock_if_owned(db, session.name, task_id)
 
@@ -555,13 +567,17 @@ def process_queue_once(
         if session.active_task is not None:
             continue
 
-        direct_message = publish_without_fusion_if_current(
-            repo,
-            db,
-            config,
-            session,
-            task_id_factory=task_id_factory,
-        )
+        try:
+            direct_message = publish_without_fusion_if_current(
+                repo,
+                db,
+                config,
+                session,
+                task_id_factory=task_id_factory,
+            )
+        except Exception:
+            dequeue_session(db, session.name)
+            return False
         if direct_message is not None:
             dequeue_session(db, session.name)
             _mark_waiting_sessions_queued(db, exclude=session.name)

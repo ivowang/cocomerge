@@ -192,6 +192,14 @@ def _main(argv: list[str] | None = None) -> int:
         initialize_schema(db)
         session = infer_session_from_cwd(db)
         remote_errors = [_sync_remote_best_effort(repo, config, session)]
+        if session.state == "blocked" and session.active_task is None:
+            reason = f": {session.blocked_reason}" if session.blocked_reason else ""
+            print(
+                f"{session.name}: blocked{reason}\n"
+                f"Fix the blocker, then run `cocodex resume {session.name}` from the project repository."
+            )
+            _print_remote_sync_errors(remote_errors)
+            return 1
         if session.active_task is not None:
             if session.state in {"fusing", "blocked", "recovery_required"}:
                 response = send_completion(repo / config.socket_path, session)

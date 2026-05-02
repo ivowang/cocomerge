@@ -98,7 +98,11 @@ Direct publish is deliberately limited to sessions whose recorded
 uncommitted changes, Cocodex creates a snapshot commit with the session's
 configured Git identity, then fast-forwards local `main`. If another session
 publishes first, this condition becomes false and the later session goes
-through the normal semantic fusion path.
+through the normal semantic fusion path. If direct publish fails after Cocodex
+has claimed the lock, for example because the repository's main worktree has
+local files that Git refuses to overwrite, the session is moved to `blocked`
+with no active task and the lock is released. The operator fixes the blocker
+and runs `cocodex resume <name>` to retry from the committed session head.
 
 No publish path fast-forwards clean idle sessions. Other developers' worktrees
 move only when those developers run `cocodex sync` from their own managed
@@ -185,8 +189,8 @@ Important states:
 - `fusing`: the owning Codex is applying the snapshot on top of latest `main`.
 - `verifying`: Cocodex is validating the candidate.
 - `publishing`: Cocodex is moving `main` and optionally pushing remote.
-- `blocked`: the active sync task needs the same session to fix and rerun
-  `sync`, or an operator to inspect it.
+- `blocked`: either an active sync task needs the same session to fix and rerun
+  `sync`, or an operator-level blocker must be fixed and resumed.
 - `recovery_required`: Cocodex stopped because continuing automatically could
   lose work or mis-publish state.
 - `abandoned`: the session task was manually abandoned.
@@ -286,6 +290,15 @@ External main detection:
 
 Manual recovery commands are intentionally operator-only.
 
+Blocked recovery:
+
+- active-task `blocked` states keep their task id and usually keep the lock;
+  the owning Codex fixes the task issue and runs `cocodex sync` again;
+- taskless `blocked` states are operator-recoverable. After fixing the
+  `blocked_reason`, `cocodex resume <name>` queues the session again;
+- `abandon` clears Cocodex's task/queue/lock bookkeeping for a session but does
+  not revert files or commits in any worktree.
+
 ## Development Notes
 
 The public release tree includes the Cocodex release scenario tests under
@@ -303,6 +316,11 @@ python -m pytest -q
 PYTHONPATH=src python3 -m cocodex --help
 git diff --check HEAD
 ```
+
+When debugging reports that `sync` does not update a remote repository, check
+`cocodex status` first. If it shows `remote: none`, `config.remote` is `null`
+and `try_force_push_session_refs()` intentionally returns without pushing,
+even if the underlying Git repository has an `origin` remote.
 
 ## PyPI Release
 

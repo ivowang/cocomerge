@@ -343,6 +343,45 @@ Cocodex prefers stopping over guessing:
   on the next `sync`;
 - unexpected recovery states require operator inspection.
 
+## Recovery And Resume
+
+Use `cocodex status` first. It shows each session state, active task, blocked
+reason, configured remote, and whether the integration lock is held.
+
+For normal task blocks, do not use `resume` immediately. If a session is
+`blocked` with a task id because the candidate was not committed, the worktree
+is dirty before validation, or the validation report is missing, the owning
+Codex should fix that issue in the same managed worktree and run
+`cocodex sync` again. The integration lock remains with that task so no other
+session can publish over it.
+
+Use `cocodex resume <name>` when `status` shows a blocked or recovery session
+that no longer owns the integration lock. This is an operator action from the
+project repository, not a normal developer command. Fix the underlying blocker
+first, then resume. For example, if direct publish failed because the project
+repository's main worktree had local files that would be overwritten, clean or
+move those files in the main worktree, then run:
+
+```bash
+cocodex resume alice
+```
+
+After resume, Cocodex queues that session again and retries when the daemon can
+process it. If the session's Codex window was closed, restart it with:
+
+```bash
+cocodex join alice
+```
+
+Use `cocodex abandon <name>` only when the active Cocodex task should be
+discarded or manually recovered outside Cocodex. `abandon` clears Cocodex's
+queue/task/lock bookkeeping for that session; it does not revert files or
+commits in the session worktree.
+
+Keep the project repository's main worktree clean during normal operation.
+Developer edits belong in `.cocodex/worktrees/<name>`. Uncommitted files in the
+main worktree can block Cocodex from fast-forwarding local `main`.
+
 ## Command Reference
 
 Normal developer command:
@@ -359,6 +398,8 @@ cocodex daemon
 cocodex join alice
 cocodex status
 cocodex log
+cocodex resume alice
+cocodex abandon alice
 ```
 
 ## Troubleshooting
@@ -380,5 +421,19 @@ restart the session from the developer's tmux pane with `cocodex join <name>`.
 Remote sync warnings are non-fatal. Fix the network or Git authentication
 problem when convenient; Cocodex retries remote synchronization on later
 `cocodex sync` commands.
+
+If local `main` advances but the Git remote never changes, check
+`cocodex status` and `.cocodex/config.json`. Cocodex only pushes when
+`remote` is configured, for example `"remote": "origin"`. A repository can have
+a Git `origin` remote while Cocodex still shows `remote: none` if it was
+initialized without `--remote origin`; edit the config or reinitialize
+intentionally before expecting remote sync.
+
+`sync already in progress (publishing)` should be short-lived. If it persists,
+run `cocodex status` and `cocodex log`. A blocked session with no lock usually
+means the operator should fix the logged blocker and run `cocodex resume
+<name>`. A `publishing` session with no lock after a daemon crash should be
+handled by restarting the daemon so startup recovery can move it to
+`recovery_required`.
 
 Implementation details are documented in [docs/DEV.md](docs/DEV.md).

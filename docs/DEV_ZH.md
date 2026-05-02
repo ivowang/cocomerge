@@ -57,7 +57,7 @@ cocodex sync
 
 daemon 不会自动把 dirty session 入队。dirty work 会留在本地，直到 owner 显式运行 `sync`。
 
-direct publish 只允许用于该 session 记录的 `last_seen_main` 仍然等于当前本地 `main` 的情况。如果 worktree 有未提交修改，Cocodex 会用该 session 配置的 Git identity 创建 snapshot commit，然后 fast-forward 本地 `main`。如果另一个 session 已经先发布，条件会变为 false，后面的 session 会进入正常语义融合路径。
+direct publish 只允许用于该 session 记录的 `last_seen_main` 仍然等于当前本地 `main` 的情况。如果 worktree 有未提交修改，Cocodex 会用该 session 配置的 Git identity 创建 snapshot commit，然后 fast-forward 本地 `main`。如果另一个 session 已经先发布，条件会变为 false，后面的 session 会进入正常语义融合路径。如果 Cocodex 已经拿到 lock 后 direct publish 失败，例如项目仓库的 main worktree 中有 Git 拒绝覆盖的本地文件，这个 session 会进入无 active task 的 `blocked`，并释放 lock。operator 修复 blocker 后运行 `cocodex resume <name>`，从该 session 已提交的 HEAD 重试。
 
 任何 publish 路径都不会 fast-forward clean idle sessions。其他开发者的 worktree 只有在他们自己从 managed worktree 运行 `cocodex sync` 时才会移动。
 
@@ -116,7 +116,7 @@ lock 和 `active_task` 必须保持一致。队列处理通过 `claim_integratio
 - `fusing`：拥有任务的 Codex 正在最新 `main` 上融合 snapshot。
 - `verifying`：Cocodex 正在验证 candidate。
 - `publishing`：Cocodex 正在移动 `main` 并可选推送 remote。
-- `blocked`：active sync task 需要同一个 session 修复后再次运行 `sync`，或由 operator 检查。
+- `blocked`：可能是 active sync task 需要同一个 session 修复后再次运行 `sync`，也可能是需要 operator 修复后 resume 的外部 blocker。
 - `recovery_required`：继续自动处理可能丢失改动或错误发布，因此需要显式恢复。
 - `abandoned`：session task 被手动放弃。
 
@@ -196,6 +196,12 @@ External main detection：
 
 手动恢复命令只面向 operator。
 
+Blocked recovery：
+
+- 带 active task 的 `blocked` 通常保留 task id，并且 lock 仍属于该 task；拥有该任务的 Codex 修复 task 问题后再次运行 `cocodex sync`；
+- 无 active task 的 `blocked` 是 operator 恢复场景。修复 `blocked_reason` 指出的底层问题后，执行 `cocodex resume <name>` 将该 session 重新入队；
+- `abandon` 只清理 Cocodex 对某个 session 的 task/queue/lock 记录，不会 revert 任何 worktree 中的文件或 commit。
+
 ## 维护说明
 
 公开发布树包含 `tests/` 下的 Cocodex release scenario tests。这些测试会随 source distribution 一起发布，便于用户和维护者复现 PyPI 发布前使用的端到端检查。测试运行时创建的临时仓库放在 `COCODEX_TEST_ROOT` 指定的位置；如果没有设置该环境变量，则默认使用 `~/coconut-tests`。在当前开发环境中，这个默认路径是 `/root/coconut-tests`。
@@ -208,6 +214,10 @@ python -m pytest -q
 PYTHONPATH=src python3 -m cocodex --help
 git diff --check HEAD
 ```
+
+如果排查 `sync` 为什么没有更新远端仓库，先看 `cocodex status`。如果显示
+`remote: none`，说明 `config.remote` 是 `null`，`try_force_push_session_refs()`
+会按设计直接返回，不会 push；即使底层 Git 仓库有 `origin` remote 也是如此。
 
 ## PyPI 发布
 

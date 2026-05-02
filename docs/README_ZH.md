@@ -273,6 +273,53 @@ Cocodex 的原则是宁可停下来，也不猜测：
 - remote sync 失败不会阻塞本地进度；Cocodex 会打印 warning，并在下一次 `sync` 时重试；
 - 非预期 recovery 状态需要 operator 检查。
 
+## 恢复与 Resume
+
+先运行 `cocodex status`。它会显示每个 session 的 state、active task、
+blocked reason、当前配置的 remote，以及 integration lock 是否被持有。
+
+普通 task block 不要马上 `resume`。如果某个 session 是带 task id 的
+`blocked`，原因是 candidate 没提交、validation 前 worktree 仍然 dirty，
+或者 validation report 缺失，那么应该由这个 session 自己的 Codex 在同一个
+managed worktree 中修复问题，然后再次运行 `cocodex sync`。这时 integration
+lock 仍属于这个 task，其他 session 不能越过它发布。
+
+当 `status` 显示某个 session 是 `blocked` 或 `recovery_required`，并且它
+不再持有 integration lock 时，才使用：
+
+```bash
+cocodex resume <name>
+```
+
+这是 operator 在项目仓库中执行的恢复命令，不是普通开发者日常命令。先修复
+底层 blocker，再 resume。例如 direct publish 失败是因为项目仓库的 main
+worktree 中有会被覆盖的本地文件，那就先在 main worktree 中清理或移动这些
+文件，然后执行：
+
+```bash
+cocodex resume alice
+```
+
+resume 后，Cocodex 会把这个 session 重新放入队列，daemon 能处理时会重试。
+如果这个开发者的 Codex 窗口已经关闭，之后用同一个名字重新启动：
+
+```bash
+cocodex join alice
+```
+
+只有当某个 active Cocodex task 应该被丢弃，或者要完全手动恢复时，才使用：
+
+```bash
+cocodex abandon <name>
+```
+
+`abandon` 只会清理 Cocodex 对这个 session 的 queue/task/lock 记录，不会替你
+revert session worktree 里的文件或 commit。
+
+正常运行时，项目仓库的 main worktree 应保持 clean。开发者改动应该发生在
+`.cocodex/worktrees/<name>` 中。main worktree 里的未提交文件可能阻止 Cocodex
+fast-forward 本地 `main`。
+
 ## 命令速览
 
 普通开发者命令：
@@ -289,6 +336,8 @@ cocodex daemon
 cocodex join alice
 cocodex status
 cocodex log
+cocodex resume alice
+cocodex abandon alice
 ```
 
 ## 常见问题
@@ -300,5 +349,17 @@ cocodex log
 如果 Cocodex 只打印 task 和 prompt 文件路径，而没有自动粘贴进 Codex，通常说明 `join` 不是从 tmux pane 中启动的，或者 tmux prompt injection 失败了。可以在对应 worktree 里读取 task file 手动执行，也可以从该开发者的 tmux pane 重新运行 `cocodex join <name>`。
 
 remote sync warning 不会阻断本地开发。之后修复网络或 Git 认证问题即可；Cocodex 会在后续 `cocodex sync` 中重试远程同步。
+
+如果本地 `main` 已经前进，但 Git 远端一直没有变化，先看 `cocodex status`
+和 `.cocodex/config.json`。Cocodex 只有在 `remote` 已配置时才会 push，例如
+`"remote": "origin"`。即使 Git 仓库本身有 `origin` remote，如果初始化时没有
+传 `--remote origin`，Cocodex 仍会显示 `remote: none`，也不会同步远端；这时
+需要编辑配置，或明确重新初始化配置后再期待 remote sync。
+
+`sync already in progress (publishing)` 应该只是短暂状态。如果它持续存在，先
+看 `cocodex status` 和 `cocodex log`。如果某个 session 已经是无锁的
+`blocked`，通常需要 operator 修复日志里的 blocker 后执行
+`cocodex resume <name>`。如果 daemon crash 后出现无锁的 `publishing`，重启
+daemon，让启动恢复逻辑把它转成 `recovery_required` 后再处理。
 
 实现细节请阅读 [docs/DEV_ZH.md](DEV_ZH.md)。

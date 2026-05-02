@@ -24,6 +24,7 @@ def format_status(
     now_value = now()
     lines = [
         f"main: {current_head(repo, config.main_branch)}",
+        f"remote: {config.remote or 'none'}",
         f"lock: {lock['owner']} ({lock['task_id']})" if lock else "lock: free",
         "sessions:",
     ]
