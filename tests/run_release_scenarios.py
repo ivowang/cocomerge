@@ -522,9 +522,11 @@ def test_init_status_config_join(h: Harness) -> None:
     h.require(
         "affects only this managed worktree and local `main`" in agents
         and "sync may publish it directly" in agents
+        and "tries a normal Git merge under the lock" in agents
+        and "Only if Git cannot merge cleanly" in agents
         and "server branch refs" not in agents
         and "sync requests an integration task" not in agents,
-        "managed AGENTS.md describes scoped sync and direct publish",
+        "managed AGENTS.md describes scoped sync, direct publish, and Git merge fast path",
     )
     prompt_check = h.run(
         "prompt text: scoped sync guidance",
@@ -540,6 +542,7 @@ def test_init_status_config_join(h: Harness) -> None:
     )
     h.require(
         "This task exists because this session has local work" in prompt_check.stdout
+        and "clean Git merge with lightweight checks" in prompt_check.stdout
         and "does not move or notify other Cocodex session worktrees" in prompt_check.stdout
         and "remote refs" not in prompt_check.stdout,
         "sync prompt describes semantic task scope and scoped remote sync",
@@ -674,8 +677,8 @@ def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     bob_catchup = h.run("dirty sync: bob explicitly catches up", h.cocodex("sync"), bob, timeout=60)
     h.require("synced to" in bob_catchup.stdout or "already synced" in bob_catchup.stdout, "bob catches up only after own sync")
     h.require(head(bob) == direct_main, "bob worktree moves only after bob sync")
-    write(worktree / "feature.txt", "alice dirty feature\n")
-    write(bob / "bob-main.txt", "bob advances main first\n")
+    write(worktree / "app.txt", "base\nalice dirty feature\n")
+    write(bob / "app.txt", "base\nbob advances main first\n")
     bob_direct = h.run("dirty sync: bob advances main directly", h.cocodex("sync"), bob, timeout=60)
     h.require("published directly" in bob_direct.stdout, "bob direct publish advances main before alice sync")
     queued = h.run("dirty sync: queue alice after main advanced", h.cocodex("sync"), worktree, timeout=60)
@@ -725,6 +728,69 @@ def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     h.terminate(bob_join, "dirty-publish-bob-join")
     h.terminate(join, "dirty-publish-alice-join")
     h.terminate(daemon, "dirty-publish-daemon")
+
+
+def test_git_merge_fast_path_and_conflict_fallback(h: Harness) -> None:
+    repo = make_repo(h, "git-merge-fast-path", interval=0.5)
+    daemon = start_daemon(h, repo, "git-merge-fast-path")
+    alice_join = start_join(h, repo, "alice", "git-merge-fast-path-alice-join")
+    charlie_join = start_join(h, repo, "charlie", "git-merge-fast-path-charlie-join")
+    alice = repo / ".cocodex" / "worktrees" / "alice"
+    charlie = repo / ".cocodex" / "worktrees" / "charlie"
+
+    write(alice / "alice-auto-merge.txt", "alice can merge cleanly\n")
+    write(charlie / "charlie-auto-merge.txt", "charlie advances main first\n")
+    charlie_publish = h.run(
+        "git merge fast path: charlie advances main",
+        h.cocodex("sync"),
+        charlie,
+        timeout=60,
+    )
+    h.require("published directly" in charlie_publish.stdout, "charlie direct publish advances main")
+    task_files_before = set((repo / ".cocodex" / "tasks").glob("*.md"))
+    alice_sync = h.run(
+        "git merge fast path: alice sync after main advanced",
+        h.cocodex("sync"),
+        alice,
+        timeout=60,
+    )
+    h.require("Queued alice for sync" in alice_sync.stdout, "alice enters serialized sync")
+    h.wait_for(
+        "git merge fast path publishes without fusing",
+        lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "clean",
+        timeout=20,
+    )
+    auto_main = head(repo, "main")
+    auto_parents = git(h, "git merge fast path: main has merge parents", repo, "show", "-s", "--format=%P", "main").stdout.split()
+    task_files_after = set((repo / ".cocodex" / "tasks").glob("*.md"))
+    h.require("published with git merge" in h.run("git merge fast path: log", h.cocodex("log"), repo).stdout, "git merge fast path records publish reason")
+    h.require(len(auto_parents) == 2, "clean divergent sync creates a Git merge commit")
+    h.require(head(alice) == auto_main, "alice worktree points at auto-merged main")
+    h.require((repo / "alice-auto-merge.txt").exists() and (repo / "charlie-auto-merge.txt").exists(), "auto-merged main contains both features")
+    h.require(task_files_after == task_files_before, "clean Git merge does not create a Codex task file")
+    h.require(status_porcelain(alice) == "", "alice worktree clean after Git merge publish")
+    assert_single_lock_owner(h, repo, None, "lock released after clean Git merge publish")
+
+    h.run("git merge fallback: charlie catches up", h.cocodex("sync"), charlie, timeout=60)
+    write(alice / "app.txt", "base\nalice conflict feature\n")
+    write(charlie / "app.txt", "base\ncharlie conflict feature\n")
+    h.run("git merge fallback: charlie advances conflicting main", h.cocodex("sync"), charlie, timeout=60)
+    h.run("git merge fallback: alice sync queues", h.cocodex("sync"), alice, timeout=60)
+    h.wait_for(
+        "git merge fallback enters fusing",
+        lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "fusing",
+        timeout=20,
+    )
+    fallback_task = latest_task_id(repo, "alice")
+    h.require(
+        (repo / ".cocodex" / "tasks" / f"{fallback_task}.md").exists(),
+        "conflicting Git merge falls back to a Codex task",
+    )
+    assert_single_lock_owner(h, repo, "alice", "conflict fallback keeps lock for Codex task")
+
+    h.terminate(charlie_join, "git-merge-fast-path-charlie-join")
+    h.terminate(alice_join, "git-merge-fast-path-alice-join")
+    h.terminate(daemon, "git-merge-fast-path-daemon")
 
 
 def test_configured_remote_pushes_main_and_session_refs(h: Harness) -> None:
@@ -821,9 +887,9 @@ def test_busy_sync_rejects_second_dirty_session(h: Harness) -> None:
     charlie = repo / ".cocodex" / "worktrees" / "charlie"
     alice_initial = head(alice)
     bob_initial = head(bob)
-    write(alice / "alice.txt", "alice queued feature\n")
+    write(alice / "app.txt", "base\nalice queued feature\n")
     write(bob / "bob.txt", "bob queued feature\n")
-    write(charlie / "main-queue.txt", "main advanced before queued syncs\n")
+    write(charlie / "app.txt", "base\ncharlie advances main before queued syncs\n")
     charlie_publish = h.run("busy lock: charlie advances main", h.cocodex("sync"), charlie, timeout=60)
     h.require("published directly" in charlie_publish.stdout, "charlie direct publish advances main before queued syncs")
     h.require(head(alice) == alice_initial and head(bob) == bob_initial, "charlie publish does not move alice or bob")
@@ -857,21 +923,11 @@ def test_busy_sync_rejects_second_dirty_session(h: Harness) -> None:
     )
     h.run("busy lock: publish alice", h.cocodex("sync"), alice, timeout=60)
     h.run("busy lock: bob retries sync after alice publish", h.cocodex("sync"), bob, timeout=60)
-    h.wait_for("bob fusing after retry", lambda: session_row(repo, "bob") is not None and session_row(repo, "bob")["state"] == "fusing", timeout=20)
-    bob_task = latest_task_id(repo, "bob")
-    assert_single_lock_owner(h, repo, "bob", "lock moved to bob only after alice publish")
-    h.require(alice_task != bob_task, "two dirty sessions have distinct task ids")
-
-    write(bob / "bob.txt", "bob queued feature\n")
-    git(h, "busy lock: bob candidate add", bob, "add", "-A")
-    git(h, "busy lock: bob candidate commit", bob, "commit", "-m", "bob queue candidate")
-    write_validation(
-        repo,
-        bob_task,
-        "Validation plan: inspect bob.txt after reapplying queued feature.\n"
-        "Command: cat bob.txt. Result: content matches. Remaining risk: fixture only.\n",
+    h.wait_for(
+        "bob auto-merges after alice publish",
+        lambda: session_row(repo, "bob") is not None and session_row(repo, "bob")["state"] == "clean",
+        timeout=20,
     )
-    h.run("busy lock: publish bob", h.cocodex("sync"), bob, timeout=60)
     assert_single_lock_owner(h, repo, None, "lock free after serial queue drains")
     h.require((repo / "bob.txt").exists() and (repo / "alice.txt").exists(), "main contains both serialized publications")
 
@@ -888,8 +944,8 @@ def test_active_task_resume_and_abandon_create_recovery_handles(h: Harness) -> N
     charlie_join = start_join(h, repo, "charlie", "task-recovery-charlie-join")
     alice = repo / ".cocodex" / "worktrees" / "alice"
     charlie = repo / ".cocodex" / "worktrees" / "charlie"
-    write(alice / "alice-recovery.txt", "alice recovery feature\n")
-    write(charlie / "charlie-recovery.txt", "charlie advances main first\n")
+    write(alice / "app.txt", "base\nalice recovery feature\n")
+    write(charlie / "app.txt", "base\ncharlie advances main first\n")
     h.run("task recovery: charlie advances main", h.cocodex("sync"), charlie, timeout=60)
     h.run("task recovery: alice starts fusion", h.cocodex("sync"), alice, timeout=60)
     h.wait_for("task recovery alice fusing", lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "fusing", timeout=20)
@@ -1069,8 +1125,8 @@ def test_join_restart_notices(h: Harness) -> None:
     active_charlie_join = start_join(h, active_repo, "charlie", "restart-active-charlie-long")
     active_worktree = active_repo / ".cocodex" / "worktrees" / "alice"
     active_charlie = active_repo / ".cocodex" / "worktrees" / "charlie"
-    write(active_worktree / "active.txt", "active work\n")
-    write(active_charlie / "charlie.txt", "charlie advances active main\n")
+    write(active_worktree / "app.txt", "base\nactive work\n")
+    write(active_charlie / "app.txt", "base\ncharlie advances active main\n")
     h.run("restart notice: charlie advances active main", h.cocodex("sync"), active_charlie, timeout=60)
     h.run("restart notice: queue active session", h.cocodex("sync"), active_worktree, timeout=60)
     h.wait_for("restart active fusing", lambda: session_row(active_repo, "alice") is not None and session_row(active_repo, "alice")["state"] == "fusing", timeout=20)
@@ -1088,6 +1144,7 @@ def main() -> int:
         test_init_status_config_join(h)
         test_main_guard_blocks_direct_main_writes(h)
         test_clean_sync_and_dirty_publish(h)
+        test_git_merge_fast_path_and_conflict_fallback(h)
         test_configured_remote_pushes_main_and_session_refs(h)
         test_direct_publish_blocked_by_dirty_main_can_resume(h)
         test_busy_sync_rejects_second_dirty_session(h)

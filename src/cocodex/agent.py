@@ -168,7 +168,8 @@ def build_sync_prompt(session: str, task_file: Path) -> str:
         [
             "Cocodex sync task is ready.",
             "This task exists because this session has local work and `main` advanced",
-            "before that work could be published directly.",
+            "before that work could be published directly, and Cocodex could not",
+            "publish it through a clean Git merge with lightweight checks.",
             "",
             f"Session: {session}",
             f"Task file: {task_file}",

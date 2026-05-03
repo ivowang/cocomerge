@@ -165,6 +165,18 @@ def diff(repo: Path, base: str, head: str) -> str:
     return run_git(repo, ["diff", f"{base}..{head}"])
 
 
+def diff_check(repo: Path, base: str, head: str) -> None:
+    run_git(repo, ["diff", "--check", f"{base}..{head}"])
+
+
+def merge_commit(repo: Path, ref: str, message: str) -> None:
+    run_git(repo, ["merge", "--no-ff", "--no-edit", "-m", message, ref])
+
+
+def merge_abort(repo: Path) -> None:
+    run_git(repo, ["merge", "--abort"], check=False)
+
+
 def checkout(repo: Path, ref: str) -> None:
     run_git(repo, ["checkout", ref])
 

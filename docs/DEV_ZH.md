@@ -64,7 +64,7 @@ cocodex sync
 
 daemon 不会自动把 dirty session 入队。dirty work 会留在本地，直到 owner 显式运行 `sync`。
 
-direct publish 只允许用于该 session 记录的 `last_seen_main` 仍然等于当前本地 `main` 的情况。如果 worktree 有未提交修改，Cocodex 会用该 session 配置的 Git identity 创建 snapshot commit，然后 fast-forward 本地 `main`。如果另一个 session 已经先发布，条件会变为 false，后面的 session 会进入正常语义融合路径。如果 Cocodex 已经拿到 lock 后 direct publish 失败，例如项目仓库的 main worktree 中有 Git 拒绝覆盖的本地文件，这个 session 会进入无 active task 的 `blocked`，并释放 lock。operator 修复 blocker 后运行 `cocodex resume <name>`，从该 session 已提交的 HEAD 重试。
+direct publish 只允许用于该 session 记录的 `last_seen_main` 仍然等于当前本地 `main` 的情况。如果 worktree 有未提交修改，Cocodex 会用该 session 配置的 Git identity 创建 snapshot commit，然后 fast-forward 本地 `main`。如果另一个 session 已经先发布，条件会变为 false。后面的 session 会拿到 integration lock，snapshot 自己的工作，并先尝试把最新 `main` 普通 Git merge 到这个 snapshot 上。Git merge candidate 只有在 worktree clean、candidate 同时包含最新 `main` 和 session snapshot、且 candidate diff 通过 `git diff --check` 时才会被接受。如果这个轻量路径失败，Cocodex 会把 worktree 重置到最新 `main` 并进入正常语义融合 task。如果 Cocodex 已经拿到 lock 后 direct publish 失败，例如项目仓库的 main worktree 中有 Git 拒绝覆盖的本地文件，这个 session 会进入无 active task 的 `blocked`，并释放 lock。operator 修复 blocker 后运行 `cocodex resume <name>`，从该 session 已提交的 HEAD 重试。
 
 任何 publish 路径都不会 fast-forward clean idle sessions。其他开发者的 worktree 只有在他们自己从 managed worktree 运行 `cocodex sync` 时才会移动。
 
@@ -184,6 +184,10 @@ active-task `sync` 会触发 `publish_candidate()`。
 1. 将 session 标记为 clean；
 2. 更新 `last_seen_main`；
 3. 释放 lock。
+
+## 发布流程
+
+对于 `last_seen_main` 已过期的 dirty session，`process_queue_once()` 会先获取 integration lock 并 freeze session agent。`prepare_locked_sync()` 随后 snapshot session work，并调用 `publish_with_git_merge_if_clean()`。这条路径会在 session worktree 内运行 `git merge --no-ff`，再执行上面描述的轻量结构检查。clean merge 成功时，Cocodex 直接发布到本地 `main`，记录 `published with git merge`，不会创建 task file，也不会打扰 Codex session。merge conflict、unsafe Git state、merge 后 worktree dirty、缺失 ancestry 或 `git diff --check` 失败，都会进入语义 fallback：Cocodex 会 abort 或 reset 掉 merge，保留 snapshot ref，然后创建正常 Cocodex task。
 
 ## 恢复语义
 

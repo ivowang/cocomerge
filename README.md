@@ -19,8 +19,10 @@ state." Depending on the session state, it can:
 
 - fast-forward a clean session to the latest `main`;
 - publish a dirty session directly when it is already based on latest `main`;
-- start a dirty session's semantic integration when `main` has advanced and
-  the integration lock is free;
+- when both the dirty session and `main` advanced, try a locked Git merge with
+  lightweight structural checks and publish it if clean;
+- start a dirty session's semantic integration when Git cannot merge cleanly or
+  the lightweight checks fail;
 - after Cocodex gives the session a task, publish the committed candidate as
   the new `main`.
 
@@ -272,16 +274,20 @@ lock is free, Cocodex:
 
 1. freezes Alice's session;
 2. snapshots Alice's current work;
-3. resets Alice's worktree to the latest `main`;
-4. writes a task file under `.cocodex/tasks/`;
-5. pastes the sync prompt into Alice's Codex terminal when tmux is available,
-   and always prints the task file path.
+3. tries a normal Git merge of latest `main` into Alice's snapshot;
+4. runs lightweight checks: the worktree must be clean, the candidate must
+   contain both latest `main` and Alice's snapshot, and `git diff --check` must
+   pass for the candidate diff;
+5. publishes the merge commit directly if those checks pass.
 
-Alice's Codex reads the task file and re-implements or semantically merges
-Alice's feature on top of the latest `main`. If the task arrives while Codex is
-working on another request, Codex should pause at a safe point, preserve that
-request's remaining intent, complete the sync task, and then resume the paused
-work after sync succeeds.
+If Git reports a conflict, leaves an unsafe state, or the lightweight checks
+fail, Cocodex resets Alice's worktree to latest `main`, writes a task file under
+`.cocodex/tasks/`, and pastes the sync prompt into Alice's Codex terminal when
+tmux is available. Alice's Codex then reads the task file and re-implements or
+semantically merges Alice's feature on top of the latest `main`. If the task
+arrives while Codex is working on another request, Codex should pause at a safe
+point, preserve that request's remaining intent, complete the sync task, and
+then resume the paused work after sync succeeds.
 
 For each task, Codex designs and runs sufficient validation for the semantic
 merge. That can mean existing tests, new or updated tests, targeted scripts, or
@@ -314,8 +320,11 @@ Alice runs:
 ```
 
 If no one else has advanced `main` since Alice last synced, Cocodex publishes
-Alice directly. If `main` has advanced, Cocodex gives Alice's Codex a task;
-Alice's Codex applies feature A on latest `main`, commits, and runs:
+Alice directly. If `main` has advanced, Cocodex first tries a normal Git merge
+under the integration lock. If that merge and the lightweight checks pass,
+Cocodex publishes without involving Codex. Only when Git cannot merge cleanly
+or the checks fail does Cocodex give Alice's Codex a task; Alice's Codex applies
+feature A on latest `main`, commits, and runs:
 
 ```bash
 !cocodex sync
@@ -354,6 +363,8 @@ Cocodex prefers stopping over guessing:
 - only one session owns the integration lock at a time;
 - a second session's `sync` is rejected while another session is already
   syncing;
+- clean Git merges are attempted under the same lock before a Codex semantic
+  task is created;
 - local Git hooks block ordinary direct writes and pushes to `main`;
 - running `sync` before committing a task candidate is rejected;
 - missing or insufficient validation reports keep the task locked so the same

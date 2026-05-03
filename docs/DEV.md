@@ -118,12 +118,17 @@ Direct publish is deliberately limited to sessions whose recorded
 `last_seen_main` still equals current local `main`. If the worktree has
 uncommitted changes, Cocodex creates a snapshot commit with the session's
 configured Git identity, then fast-forwards local `main`. If another session
-publishes first, this condition becomes false and the later session goes
-through the normal semantic fusion path. If direct publish fails after Cocodex
-has claimed the lock, for example because the repository's main worktree has
-local files that Git refuses to overwrite, the session is moved to `blocked`
-with no active task and the lock is released. The operator fixes the blocker
-and runs `cocodex resume <name>` to retry from the committed session head.
+publishes first, this condition becomes false. The later session then acquires
+the integration lock, snapshots its work, and first attempts a normal Git merge
+of latest `main` into that snapshot. A Git-merged candidate is accepted only if
+the worktree is clean, the candidate contains both latest `main` and the session
+snapshot, and `git diff --check` passes for the candidate diff. If that
+lightweight path fails, Cocodex resets the worktree to latest `main` and starts
+the normal semantic fusion task. If direct publish fails after Cocodex has
+claimed the lock, for example because the repository's main worktree has local
+files that Git refuses to overwrite, the session is moved to `blocked` with no
+active task and the lock is released. The operator fixes the blocker and runs
+`cocodex resume <name>` to retry from the committed session head.
 
 No publish path fast-forwards clean idle sessions. Other developers' worktrees
 move only when those developers run `cocodex sync` from their own managed
@@ -270,6 +275,17 @@ guidance, validation-report requirements, and the instruction to run
 `cocodex sync` again from the same worktree after committing the candidate.
 
 ## Publishing Flow
+
+For dirty sessions whose `last_seen_main` is stale, `process_queue_once()` first
+claims the integration lock and freezes the session agent. `prepare_locked_sync()`
+then snapshots the session work and calls `publish_with_git_merge_if_clean()`.
+That path runs `git merge --no-ff` inside the session worktree and performs the
+lightweight structural checks described above. Successful clean merges are
+published directly to local `main`, marked as `published with git merge`, and do
+not create a task file or prompt the Codex session. Merge conflicts, unsafe Git
+state, dirty post-merge worktrees, missing ancestry, or `git diff --check`
+failures are treated as semantic fallback conditions: the merge is aborted or
+reset away, the snapshot ref is preserved, and a normal Cocodex task is created.
 
 `publish_candidate()` is called when active-task `sync` reports completion.
 

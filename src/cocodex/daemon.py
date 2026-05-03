@@ -14,10 +14,13 @@ from .git import (
     commit,
     current_head,
     diff,
+    diff_check,
     fast_forward_ref,
     has_unsafe_git_state,
     is_dirty,
+    merge_abort,
     merge_base_is_ancestor,
+    merge_commit,
     reset_hard,
     try_force_push_session_refs,
     update_ref,
@@ -464,15 +467,44 @@ def publish_without_fusion_if_current(
     return f"published directly to {candidate}"
 
 
-def prepare_integration(
+def snapshot_session_work(
+    repo: Path,
+    config: CocodexConfig,
+    session: SessionRecord,
+    task_id: str,
+) -> IntegrationTask:
+    worktree = Path(session.worktree)
+    latest_main = current_head(repo, config.main_branch)
+    base = session.last_seen_main or latest_main
+    head = current_head(worktree)
+    if is_dirty(worktree):
+        add_all(worktree)
+        snapshot = commit(worktree, f"cocodex snapshot: {session.name} {task_id}")
+    elif head != base:
+        snapshot = head
+    else:
+        raise RuntimeError("no changes to snapshot")
+
+    update_ref(worktree, f"refs/cocodex/snapshots/{task_id}", snapshot)
+    update_ref(worktree, f"refs/cocodex/bases/{task_id}", latest_main)
+    diff_summary = diff(worktree, base, snapshot)
+    return IntegrationTask(
+        task_id=task_id,
+        session=session.name,
+        latest_main=latest_main,
+        last_seen_main=session.last_seen_main,
+        snapshot_commit=snapshot,
+        diff_summary=diff_summary,
+    )
+
+
+def prepare_locked_sync(
     repo: Path,
     db: sqlite3.Connection,
     config: CocodexConfig,
     session_name: str,
-    *,
-    task_id: str | None = None,
-    lock_already_held: bool = False,
-) -> Path:
+    task_id: str,
+) -> tuple[str, Path | str]:
     session = get_session(db, session_name)
     if session is None:
         raise RuntimeError(f"unknown session: {session_name}")
@@ -481,69 +513,114 @@ def prepare_integration(
     if unsafe:
         transition_session(db, session_name, "blocked", reason=unsafe, blocked_reason=unsafe)
         raise RuntimeError(f"unsafe Git state: {unsafe}")
+    if get_lock(db) != {"owner": session_name, "task_id": task_id}:
+        raise RuntimeError("integration lock is not held by this task")
 
-    task_id = task_id or create_task_id(session_name)
-    lock_acquired = False
-    no_changes = False
-    if lock_already_held:
-        if get_lock(db) != {"owner": session_name, "task_id": task_id}:
-            raise RuntimeError("integration lock is not held by this task")
-    else:
-        if get_lock(db) is not None:
-            raise RuntimeError("integration lock is already held")
-        set_lock(db, owner=session_name, task_id=task_id)
-        lock_acquired = True
     try:
         transition_session(db, session_name, "snapshot", reason="creating snapshot", active_task=task_id)
-        latest_main = current_head(repo, config.main_branch)
-        base = session.last_seen_main or latest_main
-        head = current_head(worktree)
-        if is_dirty(worktree):
-            add_all(worktree)
-            snapshot = commit(worktree, f"cocodex snapshot: {session_name} {task_id}")
-        elif head != base:
-            snapshot = head
-        else:
-            no_changes = True
-            raise RuntimeError("no changes to snapshot")
-
-        update_ref(worktree, f"refs/cocodex/snapshots/{task_id}", snapshot)
-        update_ref(worktree, f"refs/cocodex/bases/{task_id}", latest_main)
-        diff_summary = diff(worktree, base, snapshot)
-        reset_hard(worktree, latest_main)
-        task = IntegrationTask(
-            task_id=task_id,
-            session=session_name,
-            latest_main=latest_main,
-            last_seen_main=session.last_seen_main,
-            snapshot_commit=snapshot,
-            diff_summary=diff_summary,
-        )
-        task_path = write_task_file(repo, task)
-        dequeue_session(db, session_name)
-        transition_session(db, session_name, "fusing", reason="task started", active_task=task_id)
-        return task_path
+        task = snapshot_session_work(repo, config, session, task_id)
     except Exception as exc:
-        if lock_acquired:
-            set_lock(db, owner=None, task_id=None)
         reason = str(exc) or exc.__class__.__name__
-        if no_changes:
-            transition_session(
-                db,
-                session_name,
-                "blocked",
-                reason=reason,
-                blocked_reason=reason,
-            )
-        else:
-            transition_session(
-                db,
-                session_name,
-                "recovery_required",
-                reason=reason,
-                blocked_reason=reason,
-            )
+        transition_session(
+            db,
+            session_name,
+            "recovery_required",
+            reason=reason,
+            active_task=task_id,
+            blocked_reason=reason,
+        )
         raise
+
+    merged = publish_with_git_merge_if_clean(repo, db, config, session, task)
+    if merged is not None:
+        dequeue_session(db, session_name)
+        return ("published", merged)
+
+    reset_hard(worktree, task.latest_main)
+    task_path = write_task_file(repo, task)
+    dequeue_session(db, session_name)
+    transition_session(db, session_name, "fusing", reason="task started", active_task=task_id)
+    return ("task", task_path)
+
+
+def publish_with_git_merge_if_clean(
+    repo: Path,
+    db: sqlite3.Connection,
+    config: CocodexConfig,
+    session: SessionRecord,
+    task: IntegrationTask,
+) -> str | None:
+    worktree = Path(session.worktree)
+    try:
+        transition_session(
+            db,
+            session.name,
+            "publishing",
+            reason="attempting git merge without fusion",
+            active_task=task.task_id,
+        )
+        merge_commit(
+            worktree,
+            task.latest_main,
+            f"cocodex git merge: {session.name} {task.task_id}",
+        )
+        candidate = current_head(worktree)
+        validate_git_merge_candidate(worktree, task, candidate)
+    except Exception as exc:
+        merge_abort(worktree)
+        reset_hard(worktree, task.latest_main)
+        record_event(
+            db,
+            "git_merge_fallback",
+            {"session": session.name, "task_id": task.task_id, "reason": str(exc)},
+        )
+        return None
+
+    try:
+        fast_forward_ref(repo, config.main_branch, candidate)
+        set_metadata(db, "last_observed_main", candidate)
+    except Exception as exc:
+        reason = str(exc) or exc.__class__.__name__
+        transition_session(
+            db,
+            session.name,
+            "recovery_required",
+            reason=reason,
+            active_task=task.task_id,
+            blocked_reason=reason,
+        )
+        _release_lock_if_owned(db, session.name, task.task_id)
+        raise
+
+    transition_session(db, session.name, "clean", reason="published with git merge", active_task=None)
+    update_last_seen_main(db, session.name, candidate)
+    _release_lock_if_owned(db, session.name, task.task_id)
+    remote_error = try_force_push_session_refs(
+        repo,
+        config.remote,
+        main_branch=config.main_branch,
+        session_branch=session.branch,
+    )
+    if remote_error is not None:
+        record_event(
+            db,
+            "remote_sync_failed",
+            {"session": session.name, "task_id": task.task_id, "error": remote_error},
+        )
+    return f"published with git merge to {candidate}"
+
+
+def validate_git_merge_candidate(worktree: Path, task: IntegrationTask, candidate: str) -> None:
+    unsafe = has_unsafe_git_state(worktree)
+    if unsafe:
+        raise RuntimeError(f"unsafe Git state after merge: {unsafe}")
+    if is_dirty(worktree):
+        raise RuntimeError("worktree is dirty after git merge")
+    if not merge_base_is_ancestor(worktree, task.latest_main, candidate):
+        raise RuntimeError("git merge candidate does not contain latest main")
+    if not merge_base_is_ancestor(worktree, task.snapshot_commit, candidate):
+        raise RuntimeError("git merge candidate does not contain session snapshot")
+    diff_check(worktree, task.latest_main, candidate)
 
 
 def send_control_message(session: SessionRecord, message: dict) -> dict:
@@ -635,17 +712,20 @@ def process_queue_once(
 
         transition_session(db, session.name, "frozen", reason="freeze acknowledged", active_task=task_id)
         try:
-            task_path = prepare_integration(
+            sync_result, sync_payload = prepare_locked_sync(
                 repo,
                 db,
                 config,
                 session.name,
-                task_id=task_id,
-                lock_already_held=True,
+                task_id,
             )
         except Exception:
             _release_lock_if_owned(db, session.name, task_id)
             return False
+        if sync_result == "published":
+            _mark_waiting_sessions_queued(db, exclude=session.name)
+            return True
+        task_path = Path(sync_payload)
         refreshed = get_session(db, session.name)
         if refreshed is None:
             raise RuntimeError(f"unknown session after prepare: {session.name}")
