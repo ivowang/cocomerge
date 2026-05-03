@@ -268,6 +268,15 @@ def lock_row(repo: Path) -> sqlite3.Row:
         db.close()
 
 
+def queue_entries(repo: Path) -> list[str]:
+    db = sqlite3.connect(repo / ".cocodex" / "state.sqlite")
+    try:
+        rows = db.execute("SELECT session FROM queue ORDER BY position ASC").fetchall()
+        return [row[0] for row in rows]
+    finally:
+        db.close()
+
+
 def latest_task_id(repo: Path, session: str) -> str:
     row = session_row(repo, session)
     if row is None or not row["active_task"]:
@@ -454,9 +463,14 @@ def test_init_status_config_join(h: Harness) -> None:
     repo = make_repo(h, "init-status-config")
     status = h.run("init/status: status after init", h.cocodex("status"), repo)
     h.require(
-        "remote: none" in status.stdout and "lock: free" in status.stdout and "queue: empty" in status.stdout,
-        "status works after init and shows remote config",
+        "remote: none" in status.stdout
+        and "guard: installed" in status.stdout
+        and "lock: free" in status.stdout
+        and "queue: empty" in status.stdout,
+        "status works after init and shows remote config plus guard state",
     )
+    exclude = read(repo / ".git" / "info" / "exclude")
+    h.require("/.cocodex/" in exclude, "init excludes Cocodex runtime directory from project commits")
     help_result = h.run("join: help hides legacy flags", h.cocodex("join", "--help"), repo)
     hidden = ["--name", "--git-user-name", "--git-user-email", "--no-auto-prompt"]
     h.require(all(flag not in help_result.stdout for flag in hidden), "join help hides legacy flags")
@@ -568,19 +582,79 @@ def test_init_status_config_join(h: Harness) -> None:
     h.require(bad_status.returncode != 0 and "invalid command" in bad_status.stderr, "status validates developer command")
 
 
+def test_main_guard_blocks_direct_main_writes(h: Harness) -> None:
+    repo = make_repo(h, "main-guard")
+    remote_repo = RUN_ROOT / "main-guard-origin.git"
+    git(h, "main guard: init bare origin", remote_repo.parent, "init", "--bare", str(remote_repo))
+    git(h, "main guard: add origin", repo, "remote", "add", "origin", str(remote_repo))
+    start = head(repo, "main")
+
+    write(repo / "direct-main.txt", "direct main write must fail\n")
+    git(h, "main guard: stage direct main commit", repo, "add", "direct-main.txt")
+    blocked_commit = git(
+        h,
+        "main guard: direct main commit blocked",
+        repo,
+        "commit",
+        "-m",
+        "direct main should be blocked",
+        check=False,
+    )
+    h.require(
+        blocked_commit.returncode != 0
+        and "Cocodex protects main" in blocked_commit.stderr
+        and head(repo, "main") == start,
+        "direct commit on main is blocked before ref update",
+    )
+    h.run(
+        "main guard: unstage direct main file",
+        ["git", "reset", "--hard"],
+        repo,
+        env={"COCODEX_INTERNAL_WRITE": "1"},
+    )
+
+    git(h, "main guard: create side branch", repo, "checkout", "-b", "side-feature")
+    write(repo / "side.txt", "side feature\n")
+    git(h, "main guard: side add", repo, "add", "side.txt")
+    git(h, "main guard: side commit", repo, "commit", "-m", "side feature")
+    git(h, "main guard: back to main", repo, "checkout", "main")
+    blocked_cherry_pick = git(
+        h,
+        "main guard: direct cherry-pick blocked",
+        repo,
+        "cherry-pick",
+        "side-feature",
+        check=False,
+    )
+    h.require(
+        blocked_cherry_pick.returncode != 0
+        and "Cocodex protects main" in blocked_cherry_pick.stderr
+        and head(repo, "main") == start,
+        "direct cherry-pick onto main is blocked",
+    )
+    git(h, "main guard: abort blocked cherry-pick", repo, "cherry-pick", "--abort", check=False)
+
+    push = git(h, "main guard: direct push main blocked", repo, "push", "origin", "main", check=False)
+    h.require(
+        push.returncode != 0 and "Cocodex protects main" in push.stderr,
+        "direct push of main is blocked by pre-push hook",
+    )
+
+
 def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     repo = make_repo(h, "dirty-publish", remote=True)
     daemon = start_daemon(h, repo, "dirty-publish")
     join = start_join(h, repo, "alice", "dirty-publish-alice-join")
     bob_join = start_join(h, repo, "bob", "dirty-publish-bob-join")
+    charlie_join = start_join(h, repo, "charlie", "dirty-publish-charlie-join")
     worktree = repo / ".cocodex" / "worktrees" / "alice"
     bob = repo / ".cocodex" / "worktrees" / "bob"
+    charlie = repo / ".cocodex" / "worktrees" / "charlie"
     bob_initial = head(bob)
 
     before = head(repo, "main")
-    write(repo / "main-only.txt", "main advanced\n")
-    git(h, "clean sync: main add", repo, "add", "main-only.txt")
-    git(h, "clean sync: main commit", repo, "commit", "-m", "advance main")
+    write(charlie / "main-only.txt", "main advanced\n")
+    h.run("clean sync: charlie advances main", h.cocodex("sync"), charlie, timeout=60)
     advanced = head(repo, "main")
     h.require(before != advanced, "main advanced for clean catch-up")
     clean_sync = h.run("clean sync: alice catches up", h.cocodex("sync"), worktree, timeout=60)
@@ -622,7 +696,13 @@ def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     git(h, "dirty sync: candidate add", worktree, "add", "-A")
     git(h, "dirty sync: candidate commit", worktree, "commit", "-m", "alice candidate")
     missing = h.run("dirty sync: missing validation rejected", h.cocodex("sync"), worktree, check=False, timeout=60)
-    h.require("Blocked alice" in missing.stdout and "validation report is missing" in missing.stdout, "missing validation report is rejected")
+    h.require(
+        "Blocked alice" in missing.stdout
+        and "validation report is missing" in missing.stdout
+        and "Cocodex failure handling" in missing.stdout
+        and "Same session: fix the task blocker, then run `cocodex sync` again" in missing.stdout,
+        "missing validation report is rejected with same-session recovery guidance",
+    )
     write_validation(repo, task_id, "too short")
     short = h.run("dirty sync: short validation rejected", h.cocodex("sync"), worktree, check=False, timeout=60)
     h.require("Blocked alice" in short.stdout and "validation report is too short" in short.stdout, "short validation report is rejected")
@@ -641,6 +721,7 @@ def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     h.require("remote sync to origin failed and was skipped" in published.stderr, "unavailable remote warns without blocking publish")
     assert_single_lock_owner(h, repo, None, "integration lock released after publish")
 
+    h.terminate(charlie_join, "dirty-publish-charlie-join")
     h.terminate(bob_join, "dirty-publish-bob-join")
     h.terminate(join, "dirty-publish-alice-join")
     h.terminate(daemon, "dirty-publish-daemon")
@@ -707,8 +788,10 @@ def test_direct_publish_blocked_by_dirty_main_can_resume(h: Harness) -> None:
         timeout=60,
     )
     h.require(
-        blocked_sync.returncode != 0 and "cocodex resume alice" in blocked_sync.stdout,
-        "blocked session sync explains operator resume command",
+        blocked_sync.returncode != 0
+        and "Cocodex failure handling" in blocked_sync.stdout
+        and "Operator: fix the blocker, then run `cocodex resume alice`" in blocked_sync.stdout,
+        "blocked session sync explains operator recovery flow",
     )
     h.run("direct publish recovery: premature resume while still blocked", h.cocodex("resume", "alice"), repo, timeout=60)
     h.wait_for(
@@ -727,12 +810,12 @@ def test_direct_publish_blocked_by_dirty_main_can_resume(h: Harness) -> None:
     h.terminate(daemon, "direct-publish-recovery-daemon")
 
 
-def test_two_dirty_sessions_queue_lock(h: Harness) -> None:
-    repo = make_repo(h, "queue-lock")
-    daemon = start_daemon(h, repo, "queue-lock")
-    alice_join = start_join(h, repo, "alice", "queue-lock-alice-join")
-    bob_join = start_join(h, repo, "bob", "queue-lock-bob-join")
-    charlie_join = start_join(h, repo, "charlie", "queue-lock-charlie-join")
+def test_busy_sync_rejects_second_dirty_session(h: Harness) -> None:
+    repo = make_repo(h, "busy-lock")
+    daemon = start_daemon(h, repo, "busy-lock")
+    alice_join = start_join(h, repo, "alice", "busy-lock-alice-join")
+    bob_join = start_join(h, repo, "bob", "busy-lock-bob-join")
+    charlie_join = start_join(h, repo, "charlie", "busy-lock-charlie-join")
     alice = repo / ".cocodex" / "worktrees" / "alice"
     bob = repo / ".cocodex" / "worktrees" / "bob"
     charlie = repo / ".cocodex" / "worktrees" / "charlie"
@@ -741,49 +824,187 @@ def test_two_dirty_sessions_queue_lock(h: Harness) -> None:
     write(alice / "alice.txt", "alice queued feature\n")
     write(bob / "bob.txt", "bob queued feature\n")
     write(charlie / "main-queue.txt", "main advanced before queued syncs\n")
-    charlie_publish = h.run("queue lock: charlie advances main", h.cocodex("sync"), charlie, timeout=60)
+    charlie_publish = h.run("busy lock: charlie advances main", h.cocodex("sync"), charlie, timeout=60)
     h.require("published directly" in charlie_publish.stdout, "charlie direct publish advances main before queued syncs")
     h.require(head(alice) == alice_initial and head(bob) == bob_initial, "charlie publish does not move alice or bob")
-    h.run("queue lock: queue alice", h.cocodex("sync"), alice, timeout=60)
-    h.run("queue lock: queue bob", h.cocodex("sync"), bob, timeout=60)
+    h.run("busy lock: start alice sync", h.cocodex("sync"), alice, timeout=60)
     h.wait_for("alice first fusing", lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "fusing", timeout=20)
     alice_task = latest_task_id(repo, "alice")
     bob_row = session_row(repo, "bob")
-    h.require(bob_row is not None and bob_row["state"] == "queued" and bob_row["active_task"] is None, "second dirty session remains queued without active task")
+    busy = h.run("busy lock: bob sync rejected while alice active", h.cocodex("sync"), bob, check=False, timeout=60)
+    bob_row = session_row(repo, "bob")
+    h.require(
+        busy.returncode != 0
+        and "integration busy" in busy.stderr
+        and "Cocodex failure handling" in busy.stderr
+        and "Retry `cocodex sync` from this worktree after that session finishes" in busy.stderr
+        and bob_row is not None
+        and bob_row["state"] == "clean"
+        and bob_row["active_task"] is None
+        and queue_entries(repo) == [],
+        "second dirty session is rejected with retry guidance instead of queued while lock is busy",
+    )
     assert_single_lock_owner(h, repo, "alice", "only alice holds integration lock while first task is active")
 
     write(alice / "alice.txt", "alice queued feature\n")
-    git(h, "queue lock: alice candidate add", alice, "add", "-A")
-    git(h, "queue lock: alice candidate commit", alice, "commit", "-m", "alice queue candidate")
+    git(h, "busy lock: alice candidate add", alice, "add", "-A")
+    git(h, "busy lock: alice candidate commit", alice, "commit", "-m", "alice queue candidate")
     write_validation(
         repo,
         alice_task,
         "Validation plan: inspect alice.txt after reapplying queued feature.\n"
         "Command: cat alice.txt. Result: content matches. Remaining risk: fixture only.\n",
     )
-    h.run("queue lock: publish alice", h.cocodex("sync"), alice, timeout=60)
-    h.wait_for("bob fusing after alice publish", lambda: session_row(repo, "bob") is not None and session_row(repo, "bob")["state"] == "fusing", timeout=20)
+    h.run("busy lock: publish alice", h.cocodex("sync"), alice, timeout=60)
+    h.run("busy lock: bob retries sync after alice publish", h.cocodex("sync"), bob, timeout=60)
+    h.wait_for("bob fusing after retry", lambda: session_row(repo, "bob") is not None and session_row(repo, "bob")["state"] == "fusing", timeout=20)
     bob_task = latest_task_id(repo, "bob")
     assert_single_lock_owner(h, repo, "bob", "lock moved to bob only after alice publish")
     h.require(alice_task != bob_task, "two dirty sessions have distinct task ids")
 
     write(bob / "bob.txt", "bob queued feature\n")
-    git(h, "queue lock: bob candidate add", bob, "add", "-A")
-    git(h, "queue lock: bob candidate commit", bob, "commit", "-m", "bob queue candidate")
+    git(h, "busy lock: bob candidate add", bob, "add", "-A")
+    git(h, "busy lock: bob candidate commit", bob, "commit", "-m", "bob queue candidate")
     write_validation(
         repo,
         bob_task,
         "Validation plan: inspect bob.txt after reapplying queued feature.\n"
         "Command: cat bob.txt. Result: content matches. Remaining risk: fixture only.\n",
     )
-    h.run("queue lock: publish bob", h.cocodex("sync"), bob, timeout=60)
+    h.run("busy lock: publish bob", h.cocodex("sync"), bob, timeout=60)
     assert_single_lock_owner(h, repo, None, "lock free after serial queue drains")
     h.require((repo / "bob.txt").exists() and (repo / "alice.txt").exists(), "main contains both serialized publications")
 
-    h.terminate(charlie_join, "queue-lock-charlie-join")
-    h.terminate(bob_join, "queue-lock-bob-join")
-    h.terminate(alice_join, "queue-lock-alice-join")
-    h.terminate(daemon, "queue-lock-daemon")
+    h.terminate(charlie_join, "busy-lock-charlie-join")
+    h.terminate(bob_join, "busy-lock-bob-join")
+    h.terminate(alice_join, "busy-lock-alice-join")
+    h.terminate(daemon, "busy-lock-daemon")
+
+
+def test_active_task_resume_and_abandon_create_recovery_handles(h: Harness) -> None:
+    repo = make_repo(h, "task-recovery", interval=0.5)
+    daemon = start_daemon(h, repo, "task-recovery")
+    alice_join = start_join(h, repo, "alice", "task-recovery-alice-join")
+    charlie_join = start_join(h, repo, "charlie", "task-recovery-charlie-join")
+    alice = repo / ".cocodex" / "worktrees" / "alice"
+    charlie = repo / ".cocodex" / "worktrees" / "charlie"
+    write(alice / "alice-recovery.txt", "alice recovery feature\n")
+    write(charlie / "charlie-recovery.txt", "charlie advances main first\n")
+    h.run("task recovery: charlie advances main", h.cocodex("sync"), charlie, timeout=60)
+    h.run("task recovery: alice starts fusion", h.cocodex("sync"), alice, timeout=60)
+    h.wait_for("task recovery alice fusing", lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "fusing", timeout=20)
+    task_id = latest_task_id(repo, "alice")
+
+    db = sqlite3.connect(repo / ".cocodex" / "state.sqlite")
+    try:
+        db.execute(
+            "UPDATE sessions SET state = 'recovery_required', blocked_reason = ? WHERE name = 'alice'",
+            ("startup recovery from fusing",),
+        )
+        db.commit()
+    finally:
+        db.close()
+    resumed = h.run("task recovery: resume active task", h.cocodex("resume", "alice"), repo, timeout=60)
+    row = session_row(repo, "alice")
+    h.require(
+        "Resumed active task for alice" in resumed.stdout
+        and row is not None
+        and row["state"] == "fusing"
+        and row["active_task"] == task_id
+        and lock_row(repo)["owner"] == "alice",
+        "resume restores the active task under the existing integration lock",
+    )
+    task_status = h.run("task recovery: task command shows handles", h.cocodex("task", "alice"), repo, timeout=60)
+    h.require(
+        task_id in task_status.stdout
+        and "Task file:" in task_status.stdout
+        and "Snapshot ref:" in task_status.stdout
+        and "Base ref:" in task_status.stdout
+        and "Next step:" in task_status.stdout,
+        "task command exposes active task files, refs, and next step",
+    )
+    write(alice / "uncommitted-recovery.txt", "protect this dirty recovery file\n")
+    abandoned = h.run("task recovery: abandon active task", h.cocodex("abandon", "alice"), repo, timeout=60)
+    row = session_row(repo, "alice")
+    h.require(
+        "Backup ref:" in abandoned.stdout
+        and row is not None
+        and row["state"] == "abandoned"
+        and lock_row(repo)["owner"] is None,
+        "abandon releases the lock and prints a protected backup ref",
+    )
+    backup_refs = [
+        line.split(":", 1)[1].strip()
+        for line in abandoned.stdout.splitlines()
+        if line.startswith("Backup ref:")
+    ]
+    if backup_refs:
+        backup_head = git(h, "task recovery: backup ref exists", repo, "rev-parse", backup_refs[0]).stdout.strip()
+        h.require(bool(backup_head), "abandon backup ref resolves to a commit")
+        backup_file = git(
+            h,
+            "task recovery: backup ref includes dirty worktree file",
+            repo,
+            "show",
+            f"{backup_refs[0]}:uncommitted-recovery.txt",
+        ).stdout
+        h.require(
+            "protect this dirty recovery file" in backup_file,
+            "abandon backup ref includes uncommitted worktree content",
+        )
+
+    h.terminate(charlie_join, "task-recovery-charlie-join")
+    h.terminate(alice_join, "task-recovery-alice-join")
+    h.terminate(daemon, "task-recovery-daemon")
+
+
+def test_version_mismatch_blocks_stale_agent(h: Harness) -> None:
+    repo = make_repo(h, "version-mismatch")
+    daemon = start_daemon(h, repo, "version-mismatch")
+    join = start_join(h, repo, "alice", "version-mismatch-alice-join")
+    worktree = repo / ".cocodex" / "worktrees" / "alice"
+    h.terminate(join, "version-mismatch-alice-join")
+    mismatch = h.run(
+        "version mismatch: stale heartbeat blocks session",
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path\n"
+            "from cocodex.protocol import decode_message\n"
+            "from cocodex.transport import send_message\n"
+            "repo = Path.cwd()\n"
+            "raw = send_message(repo / '.cocodex' / 'cocodex.sock', {\n"
+            "    'type': 'heartbeat',\n"
+            "    'session': 'alice',\n"
+            "    'agent_version': '0.0-stale',\n"
+            "}, timeout=5)\n"
+            "print(decode_message(raw))\n",
+        ],
+        repo,
+        timeout=60,
+    )
+    h.require("'type': 'ack'" in mismatch.stdout, "stale heartbeat receives protocol ack")
+    h.wait_for(
+        "version mismatch blocked",
+        lambda: session_row(repo, "alice") is not None and session_row(repo, "alice")["state"] == "blocked",
+        timeout=5,
+    )
+    status = h.run("version mismatch: status reports versions", h.cocodex("status"), repo, timeout=60)
+    h.require(
+        "daemon_version:" in status.stdout
+        and "agent_version=0.0-stale" in status.stdout
+        and "version mismatch" in status.stdout,
+        "status exposes stale agent version mismatch",
+    )
+    blocked = h.run("version mismatch: sync refuses stale blocked session", h.cocodex("sync"), worktree, check=False, timeout=60)
+    h.require(
+        blocked.returncode != 0
+        and "version mismatch" in blocked.stdout
+        and "Restart `cocodex join alice` after upgrading Cocodex" in blocked.stdout,
+        "sync refuses session after stale agent heartbeat with restart guidance",
+    )
+
+    h.terminate(daemon, "version-mismatch-daemon")
 
 
 def capture_restart_join(h: Harness, repo: Path, session: str, label: str) -> CmdResult:
@@ -865,10 +1086,13 @@ def main() -> int:
     try:
         test_package_metadata(h)
         test_init_status_config_join(h)
+        test_main_guard_blocks_direct_main_writes(h)
         test_clean_sync_and_dirty_publish(h)
         test_configured_remote_pushes_main_and_session_refs(h)
         test_direct_publish_blocked_by_dirty_main_can_resume(h)
-        test_two_dirty_sessions_queue_lock(h)
+        test_busy_sync_rejects_second_dirty_session(h)
+        test_active_task_resume_and_abandon_create_recovery_handles(h)
+        test_version_mismatch_blocks_stale_agent(h)
         test_join_restart_notices(h)
     finally:
         h.cleanup()

@@ -5,6 +5,7 @@ import sqlite3
 import textwrap
 from pathlib import Path
 
+from . import __version__
 from .config import CocodexConfig
 from .git import GitError, create_worktree, current_head, is_dirty, run_git
 from .protocol import ProtocolError, decode_message
@@ -192,7 +193,9 @@ def _session_agents_content(*, session: str, branch: str, config: CocodexConfig)
             "",
             "If this worktree has no local work, sync may fast-forward it to latest `main`.",
             "If local work is already based on latest `main`, sync may publish it directly",
-            "without a Codex task. If `main` has advanced, sync queues a semantic merge task.",
+            "without a Codex task. If `main` has advanced and the integration lock is free,",
+            "sync starts a semantic merge task. If another session is already syncing,",
+            "sync fails with an integration-busy message; retry after that task finishes.",
             "Only when Cocodex prints or pastes a task file path should you read that task",
             "file, treat the current worktree as latest `main`, and re-implement or",
             "semantically merge the snapshot described by the task on top of latest `main`.",
@@ -394,7 +397,9 @@ def _local_work_notice(session: SessionRecord) -> str:
             cocodex sync
 
         Depending on whether `main` advanced, Cocodex may publish directly or
-        queue a semantic merge task for this session.
+        start a semantic merge task for this session if the integration lock is
+        free. If another session is syncing, retry `cocodex sync` after that
+        task finishes.
         """
     ).lstrip()
 
@@ -415,6 +420,7 @@ def register_with_daemon(
         "pid": pid,
         "branch": record.branch,
         "worktree": record.worktree,
+        "agent_version": __version__,
     }
     if control_socket is not None:
         message["control_socket"] = control_socket

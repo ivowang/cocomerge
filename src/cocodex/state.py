@@ -21,6 +21,7 @@ class SessionRecord:
     control_socket: str | None = None
     last_heartbeat: float | None = None
     connected: bool = False
+    agent_version: str | None = None
 
 
 def connect(repo: Path) -> sqlite3.Connection:
@@ -75,6 +76,7 @@ def initialize_schema(db: sqlite3.Connection) -> None:
     _ensure_column(db, "sessions", "control_socket", "TEXT")
     _ensure_column(db, "sessions", "last_heartbeat", "REAL")
     _ensure_column(db, "sessions", "connected", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(db, "sessions", "agent_version", "TEXT")
     db.commit()
 
 
@@ -139,6 +141,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         control_socket=row["control_socket"],
         last_heartbeat=row["last_heartbeat"],
         connected=bool(row["connected"]),
+        agent_version=row["agent_version"],
     )
 
 
@@ -188,14 +191,15 @@ def update_session_runtime(
     control_socket: str | None,
     connected: bool,
     heartbeat: float | None,
+    agent_version: str | None = None,
 ) -> None:
     cursor = db.execute(
         """
         UPDATE sessions
-        SET pid = ?, control_socket = ?, connected = ?, last_heartbeat = ?, updated_at = ?
+        SET pid = ?, control_socket = ?, connected = ?, last_heartbeat = ?, agent_version = COALESCE(?, agent_version), updated_at = ?
         WHERE name = ?
         """,
-        (pid, control_socket, int(connected), heartbeat, time.time(), name),
+        (pid, control_socket, int(connected), heartbeat, agent_version, time.time(), name),
     )
     if cursor.rowcount != 1:
         db.rollback()
@@ -209,19 +213,26 @@ def update_session_runtime(
             "control_socket": control_socket,
             "connected": connected,
             "last_heartbeat": heartbeat,
+            "agent_version": agent_version,
         },
     )
     db.commit()
 
 
-def touch_session_heartbeat(db: sqlite3.Connection, name: str, heartbeat: float) -> None:
+def touch_session_heartbeat(
+    db: sqlite3.Connection,
+    name: str,
+    heartbeat: float,
+    *,
+    agent_version: str | None = None,
+) -> None:
     cursor = db.execute(
         """
         UPDATE sessions
-        SET connected = 1, last_heartbeat = ?, updated_at = ?
+        SET connected = 1, last_heartbeat = ?, agent_version = COALESCE(?, agent_version), updated_at = ?
         WHERE name = ?
         """,
-        (heartbeat, time.time(), name),
+        (heartbeat, agent_version, time.time(), name),
     )
     if cursor.rowcount != 1:
         db.rollback()

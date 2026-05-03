@@ -15,10 +15,20 @@ parts are:
 - Session-side cooperation in `src/cocodex/agent.py`.
 - Session worktree setup in `src/cocodex/session.py`, including generated
   Cocodex guidance for Codex and per-worktree Git identity configuration.
+- Main branch protection in `src/cocodex/guard.py`.
 
 The daemon and session agents communicate over Unix domain sockets with JSONL
 messages. Git operations are delegated to the Git CLI through helpers in
 `src/cocodex/git.py`.
+
+`init` and daemon startup install Cocodex-managed Git hooks in the repository's
+common hooks directory. `reference-transaction` blocks ordinary local updates
+to `refs/heads/<main>`, `pre-push` blocks direct pushes of `main`, and
+pre-commit/rebase/merge hooks give earlier errors for common commands.
+Cocodex's own main writes and scoped remote pushes set
+`COCODEX_INTERNAL_WRITE=1` through the Git helper. This prevents accidental Git
+CLI bypasses; it does not defend against someone deliberately editing `.git`
+files directly.
 
 The daemon socket is addressed through the configured `socket_path`. If that
 path is too long for Linux `AF_UNIX`, transport writes a small pointer file at
@@ -58,6 +68,9 @@ startup, so operators can add developers incrementally.
 `init_config()` refuses to overwrite an existing config unless `force=True`
 from `cocodex init --force`. Config writes use a temporary file followed by
 atomic replace so a failed write does not leave a partially written JSON file.
+`init_config()` also adds `/.cocodex/` to `.git/info/exclude` and installs the
+main guard hooks. Daemon startup repeats both checks so existing repositories
+are upgraded when a newer Cocodex daemon starts.
 
 `load_config()` accepts only the public config schema above. Unknown keys are
 reported as configuration errors, so obsolete or misspelled settings do not
@@ -79,8 +92,9 @@ Internally, `sync` maps to different protocol actions:
   `main` when possible;
 - no active task, local changes, and `main == last_seen_main`: publish the
   current session branch directly under the integration lock;
-- no active task, local changes, and `main != last_seen_main`: request queueing
-  with `ready_to_integrate`;
+- no active task, local changes, and `main != last_seen_main`: request a
+  semantic integration task with `ready_to_integrate` only if no other session
+  owns the lock or is already waiting;
 - active task in `fusing` or retryable `blocked`: report `fusion_done` and let
   the daemon validate/publish the current session `HEAD`;
 - retryable remote publish recovery: report `fusion_done` again to retry the
@@ -114,6 +128,12 @@ and runs `cocodex resume <name>` to retry from the committed session head.
 No publish path fast-forwards clean idle sessions. Other developers' worktrees
 move only when those developers run `cocodex sync` from their own managed
 worktree.
+
+Concurrent sync requests are fail-fast. If another session owns the integration
+lock, or an earlier request is still queued for task startup,
+`ready_to_integrate` returns an `integration busy` error instead of queueing the
+second session. The FIFO queue remains as an internal handoff between the sync
+request and daemon loop, not as a multi-developer waitlist.
 
 `join <name>` resolves the developer from `config.developers[name]`. Cocodex
 uses that entry's `git_user_name` and `git_user_email`, enables Git
@@ -170,7 +190,8 @@ Each session is represented by a `SessionRecord`:
 - `last_seen_main`: last main commit known to be reflected in the session.
 - `active_task`: current integration task id, if any.
 - `blocked_reason`: human-readable block or recovery reason.
-- `pid`, `control_socket`, `last_heartbeat`, `connected`: runtime metadata.
+- `pid`, `control_socket`, `last_heartbeat`, `connected`, `agent_version`:
+  runtime metadata.
 
 SQLite also stores:
 
@@ -181,7 +202,8 @@ SQLite also stores:
 
 The lock and `active_task` must stay consistent. Queue processing uses
 `claim_integration_task()` so the session task id and lock owner are recorded in
-one SQLite transaction.
+one SQLite transaction. In normal operation the queue is single-flight because
+new sync requests are rejected while another session is syncing.
 
 ## Session States
 
@@ -207,7 +229,7 @@ Important states:
 Session to daemon:
 
 - `register`: attach a session agent and runtime metadata.
-- `heartbeat`: keep the session connected.
+- `heartbeat`: keep the session connected and report agent version.
 - `shutdown`: mark the session disconnected.
 - `ready_to_integrate`: internal queue request used by `cocodex sync`.
 - `fusion_done`: internal candidate-ready signal used by `cocodex sync`.
@@ -221,6 +243,12 @@ Daemon to session:
 `src/cocodex/protocol.py` validates message shape, and
 `src/cocodex/transport.py` implements JSONL socket transport.
 
+`register` and `heartbeat` include `agent_version`. The daemon compares this
+with its own package version. A stale clean session becomes `blocked`; a stale
+session with an active task becomes `recovery_required`. `status` exposes both
+daemon and agent versions so operators can restart old `cocodex join` agents
+after upgrades.
+
 ## Queue and Integration Flow
 
 The daemon loop performs:
@@ -232,7 +260,9 @@ The daemon loop performs:
 `process_queue_once()` only starts a task if the integration lock is free. It
 claims the lock and active task together, sends `freeze`, prepares the snapshot,
 stores snapshot/base refs under `refs/cocodex/`, resets the session worktree to
-latest `main`, writes a task file, then sends `start_fusion`.
+latest `main`, writes a task file, then sends `start_fusion`. A second session
+cannot be added behind it by `sync`; that command receives `integration busy`
+and must be retried later.
 
 The task file is created by `src/cocodex/tasks.py`. It includes the snapshot
 commit, latest main, last seen main, diff summary, interruption-handling
@@ -297,14 +327,36 @@ External main detection:
 
 Manual recovery commands are intentionally operator-only.
 
+Failure output:
+
+- CLI failures are normalized through `src/cocodex/failures.py`.
+- `format_failure_handling()` classifies common failure reasons and prints the
+  next safe action: retry after busy lock, same-session task fix, operator
+  resume, version-mismatch restart, daemon startup, or main-guard correction.
+- `format_task_status()` calls `next_step_for_session()` so `cocodex task
+  <name>` shows one explicit next step next to the task refs.
+- Transport-level daemon errors still return a short `error` message; the CLI
+  appends local failure handling guidance before exiting non-zero.
+
+Maintainers should preserve this rule when adding new failure states: every
+user-visible fail path must answer three questions in the output or docs:
+
+1. Is this a same-session action or an operator action?
+2. Should the worktree be kept unchanged, fixed, resumed, or abandoned?
+3. Which Cocodex command should be run next?
+
 Blocked recovery:
 
 - active-task `blocked` states keep their task id and usually keep the lock;
   the owning Codex fixes the task issue and runs `cocodex sync` again;
-- taskless `blocked` states are operator-recoverable. After fixing the
-  `blocked_reason`, `cocodex resume <name>` queues the session again;
-- `abandon` clears Cocodex's task/queue/lock bookkeeping for a session but does
-  not revert files or commits in any worktree.
+- `cocodex task <name>` shows task files, validation file, snapshot/base refs,
+  lock ownership, and recovery hints for one session;
+- `cocodex resume <name>` restores an active task under its lock and re-sends
+  the task prompt when the session agent is connected. For taskless `blocked`
+  states, it queues a retry after the operator fixes `blocked_reason`;
+- `abandon` creates a backup ref under `refs/cocodex/backups/...`, then clears
+  Cocodex's task/queue/lock bookkeeping for a session. It does not revert files
+  or commits in any worktree.
 
 ## Development Notes
 
@@ -363,10 +415,10 @@ python tests/run_release_scenarios.py
 python -m build
 python -m twine check --strict dist/*
 git add setup.cfg
-git commit -m "Release 0.1.1"
-git tag v0.1.1
+git commit -m "Release X.Y.Z"
+git tag vX.Y.Z
 git push origin main
-git push origin v0.1.1
+git push origin vX.Y.Z
 ```
 
 After the tag push, open the GitHub Actions run. The build job should complete

@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .guard import ensure_cocodex_excluded, install_main_guard
+
 
 CONFIG_PATH = Path(".cocodex/config.json")
 DEFAULT_DEVELOPER_COMMAND = ["codex"]
@@ -103,6 +105,8 @@ def init_config(
     _write_config_atomic(path, config)
     (cocodex_dir / "tasks").mkdir(exist_ok=True)
     (cocodex_dir / "worktrees").mkdir(exist_ok=True)
+    ensure_cocodex_excluded(repo)
+    install_main_guard(repo, main_branch=main_branch)
     return config
 
 

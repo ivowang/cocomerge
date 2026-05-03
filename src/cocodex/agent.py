@@ -8,6 +8,7 @@ import threading
 import time
 from pathlib import Path
 
+from . import __version__
 from .config import CocodexConfig
 from .protocol import ProtocolError, decode_message
 from .state import SessionRecord
@@ -117,7 +118,13 @@ class SessionAgent:
 
     def _heartbeat_loop(self) -> None:
         while not self.stop_event.wait(self.heartbeat_interval):
-            self._send_daemon({"type": "heartbeat", "session": self.record.name})
+            self._send_daemon(
+                {
+                    "type": "heartbeat",
+                    "session": self.record.name,
+                    "agent_version": __version__,
+                }
+            )
 
     def _send_daemon(self, message: dict) -> dict | None:
         socket_path = self.repo / self.config.socket_path

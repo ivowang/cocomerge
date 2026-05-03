@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from . import __version__ as DAEMON_VERSION
 from .config import CocodexConfig
 from .git import (
     add_all,
@@ -21,6 +22,7 @@ from .git import (
     try_force_push_session_refs,
     update_ref,
 )
+from .guard import ensure_cocodex_excluded, install_main_guard
 from .state import (
     SessionRecord,
     claim_integration_task,
@@ -162,6 +164,14 @@ def _emit_event(event: dict) -> None:
             session=payload.get("session"),
             task=payload.get("task_id"),
             error=payload.get("error"),
+        )
+    elif event_type == "version_mismatch":
+        _daemon_log(
+            "version mismatch",
+            created_at=created_at,
+            session=payload.get("session"),
+            daemon=payload.get("daemon_version"),
+            agent=payload.get("agent_version"),
         )
     else:
         _daemon_log(event_type, created_at=created_at, **payload)
@@ -981,6 +991,7 @@ def handle_session_message(
     session_name = message.get("session")
 
     if message_type == "register":
+        agent_version = _message_agent_version(message)
         branch = message.get("branch") or f"cocodex/{session_name}"
         worktree = message.get("worktree") or str(repo / config.worktree_root / session_name)
         existing = get_session(db, session_name)
@@ -994,7 +1005,9 @@ def handle_session_message(
                 control_socket=message.get("control_socket"),
                 connected=True,
                 heartbeat=now(),
+                agent_version=agent_version,
             )
+            _handle_agent_version(db, session_name, agent_version, reject=True)
             return {"type": "registered", "session": session_name}
         record = SessionRecord(
             name=session_name,
@@ -1005,6 +1018,8 @@ def handle_session_message(
             active_task=None,
             blocked_reason=None,
         )
+        if agent_version is not None and agent_version != DAEMON_VERSION:
+            raise RuntimeError(_version_mismatch_message(agent_version))
         register_session(db, record)
         update_session_runtime(
             db,
@@ -1013,13 +1028,16 @@ def handle_session_message(
             control_socket=message.get("control_socket"),
             connected=True,
             heartbeat=now(),
+            agent_version=agent_version,
         )
         return {"type": "registered", "session": session_name}
 
     if message_type == "heartbeat":
         if get_session(db, session_name) is None:
             raise RuntimeError(f"unknown session: {session_name}")
-        touch_session_heartbeat(db, session_name, now())
+        agent_version = _message_agent_version(message)
+        touch_session_heartbeat(db, session_name, now(), agent_version=agent_version)
+        _handle_agent_version(db, session_name, agent_version, reject=False)
         return {"type": "ack", "session": session_name}
 
     if message_type == "shutdown":
@@ -1036,6 +1054,9 @@ def handle_session_message(
             raise RuntimeError(f"invalid session state for ready_to_integrate: {session.state}")
         if session.active_task is not None:
             raise RuntimeError(f"session has active task: {session_name}")
+        busy_message = _integration_busy_message(db, session_name)
+        if busy_message is not None:
+            raise RuntimeError(busy_message)
         if not _session_has_changes(session):
             sync_message = _sync_clean_session_to_main(repo, db, config, session)
             dequeue_session(db, session_name)
@@ -1100,6 +1121,70 @@ def handle_session_message(
     return {"type": "ack", "session": session_name}
 
 
+def _message_agent_version(message: dict) -> str | None:
+    value = message.get("agent_version")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("agent_version must be a non-empty string")
+    return value
+
+
+def _version_mismatch_message(agent_version: str) -> str:
+    return (
+        f"version mismatch: daemon {DAEMON_VERSION}, session agent {agent_version}; "
+        "restart `cocodex join` after upgrading Cocodex"
+    )
+
+
+def _handle_agent_version(
+    db: sqlite3.Connection,
+    session_name: str,
+    agent_version: str | None,
+    *,
+    reject: bool,
+) -> None:
+    if agent_version is None or agent_version == DAEMON_VERSION:
+        return
+    session = get_session(db, session_name)
+    if session is None:
+        if reject:
+            raise RuntimeError(_version_mismatch_message(agent_version))
+        return
+    reason = _version_mismatch_message(agent_version)
+    if not session.blocked_reason or "version mismatch" not in session.blocked_reason:
+        state = "recovery_required" if session.active_task else "blocked"
+        transition_session(
+            db,
+            session_name,
+            state,
+            reason=reason,
+            active_task=session.active_task,
+            blocked_reason=reason,
+        )
+        record_event(
+            db,
+            "version_mismatch",
+            {
+                "session": session_name,
+                "daemon_version": DAEMON_VERSION,
+                "agent_version": agent_version,
+            },
+        )
+    if reject:
+        raise RuntimeError(reason)
+
+
+def _integration_busy_message(db: sqlite3.Connection, requester: str) -> str | None:
+    lock = get_lock(db)
+    if lock is not None and lock["owner"] != requester:
+        return f"integration busy: {lock['owner']} is syncing task {lock['task_id']}; try again after it finishes"
+    queued = [name for name in list_queue(db) if name != requester]
+    if queued:
+        return f"integration busy: {queued[0]} is waiting to sync; try again after it finishes"
+    return None
+
+
 def start_socket_server(
     repo: Path,
     db: sqlite3.Connection,
@@ -1134,6 +1219,8 @@ def start_socket_server(
 
 
 def run_daemon(repo: Path, db: sqlite3.Connection, config: CocodexConfig) -> int:
+    ensure_cocodex_excluded(repo)
+    installed_hooks = install_main_guard(repo, main_branch=config.main_branch)
     _daemon_log(
         "daemon starting",
         repo=repo,
@@ -1141,6 +1228,7 @@ def run_daemon(repo: Path, db: sqlite3.Connection, config: CocodexConfig) -> int
         remote=config.remote or "none",
         interval_s=config.dirty_interval_s,
     )
+    _daemon_log("main guard checked", hooks=",".join(installed_hooks) or "none")
     last_event_id = _latest_event_id(db)
     recover_incomplete_sessions(db)
     last_event_id = _emit_new_events(db, last_event_id)

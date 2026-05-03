@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -14,8 +15,13 @@ def run_git(
     *,
     check: bool = True,
     timeout: float | None = None,
+    internal_write: bool = False,
 ) -> str:
     command = ["git", *args]
+    env = None
+    if internal_write:
+        env = os.environ.copy()
+        env["COCODEX_INTERNAL_WRITE"] = "1"
     try:
         result = subprocess.run(
             command,
@@ -25,6 +31,7 @@ def run_git(
             stderr=subprocess.PIPE,
             check=False,
             timeout=timeout,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         display = " ".join(command)
@@ -87,9 +94,9 @@ def fast_forward_ref(repo: Path, ref: str, target: str) -> None:
     ensure_fast_forward(repo, ref, target)
     current_branch = run_git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])
     if current_branch == ref:
-        run_git(repo, ["merge", "--ff-only", target])
+        run_git(repo, ["merge", "--ff-only", target], internal_write=True)
     else:
-        run_git(repo, ["branch", "-f", ref, target])
+        run_git(repo, ["branch", "-f", ref, target], internal_write=True)
 
 
 def push_ref(repo: Path, remote: str, source: str, dest: str) -> None:
@@ -118,6 +125,7 @@ def force_push_session_refs(
             f"+refs/heads/{session_branch}:refs/heads/{session_branch}",
         ],
         timeout=timeout,
+        internal_write=True,
     )
 
 
