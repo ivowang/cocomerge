@@ -592,9 +592,11 @@ def test_init_status_config_join(h: Harness) -> None:
         and "sync may publish it directly" in agents
         and "tries a normal Git merge under the lock" in agents
         and "Only if Git cannot merge cleanly" in agents
+        and "behavioral union" in agents
+        and "stop and ask the user" in agents
         and "server branch refs" not in agents
         and "sync requests an integration task" not in agents,
-        "managed AGENTS.md describes scoped sync, direct publish, and Git merge fast path",
+        "managed AGENTS.md describes scoped sync, semantic union, direct publish, and Git merge fast path",
     )
     prompt_check = h.run(
         "prompt text: scoped sync guidance",
@@ -611,10 +613,40 @@ def test_init_status_config_join(h: Harness) -> None:
     h.require(
         "This task exists because this session has local work" in prompt_check.stdout
         and "clean Git merge with lightweight checks" in prompt_check.stdout
+        and "behavioral union" in prompt_check.stdout
+        and "user-approved resolution" in prompt_check.stdout
         and "Cocodex recovery refs" in prompt_check.stdout
         and "does not move or notify other Cocodex session worktrees" in prompt_check.stdout
         and "remote refs" not in prompt_check.stdout,
-        "sync prompt describes semantic task scope and scoped remote sync",
+        "sync prompt describes semantic union, conflict handling, and scoped remote sync",
+    )
+    tmux_prompt_delivery = h.run(
+        "prompt delivery: tmux paste trims newline and does not press enter",
+        [
+            sys.executable,
+            "-c",
+            "import json, subprocess\n"
+            "from unittest.mock import patch\n"
+            "from cocodex.agent import send_prompt_to_tmux\n"
+            "calls = []\n"
+            "def fake_run(cmd, **kwargs):\n"
+            "    calls.append({'cmd': cmd, 'input': kwargs.get('input')})\n"
+            "    return subprocess.CompletedProcess(cmd, 0, '', '')\n"
+            "with patch('subprocess.run', fake_run):\n"
+            "    send_prompt_to_tmux('%1', 'hello\\n\\n', session='alice')\n"
+            "print(json.dumps(calls, sort_keys=True))\n"
+            "assert len(calls) == 2\n"
+            "assert calls[0]['cmd'][:3] == ['tmux', 'load-buffer', '-b']\n"
+            "assert calls[0]['input'] == 'hello'\n"
+            "assert calls[1]['cmd'][:3] == ['tmux', 'paste-buffer', '-t']\n"
+            "assert not any('send-keys' in call['cmd'] for call in calls)\n",
+        ],
+        repo,
+    )
+    h.require(
+        '"input": "hello"' in tmux_prompt_delivery.stdout
+        and "send-keys" not in tmux_prompt_delivery.stdout,
+        "tmux prompt delivery trims trailing newlines and does not send Enter",
     )
     socket_check = h.run(
         "join: control socket path stays short",
@@ -713,6 +745,106 @@ def test_main_guard_blocks_direct_main_writes(h: Harness) -> None:
     )
 
 
+def test_delete_session_cleanup_and_safety(h: Harness) -> None:
+    repo = make_repo(h, "delete-session", remote=True)
+    set_developer_command(repo, "alice", ["true"])
+    h.run("delete: create alice session", h.cocodex("join", "alice"), repo, timeout=60)
+    alice = repo / ".cocodex" / "worktrees" / "alice"
+    before_branch = head(repo, "cocodex/alice")
+    write(alice / "app.txt", "base\nold alice work\n")
+    write(alice / "untracked-feature.txt", "old untracked alice work\n")
+    db = sqlite3.connect(repo / ".cocodex" / "state.sqlite")
+    try:
+        db.execute("INSERT OR IGNORE INTO queue(session) VALUES ('alice')")
+        db.commit()
+    finally:
+        db.close()
+
+    deleted = h.run("delete: removes dirty disconnected session", h.cocodex("delete", "alice"), repo, timeout=60)
+    h.require("Deleted Cocodex session alice" in deleted.stdout, "delete reports successful session cleanup")
+    h.require("Developer config was kept" in deleted.stdout, "delete explains developer config is retained")
+    h.require("remote delete cleanup failed and was skipped" in deleted.stderr, "delete remote warning is non-fatal")
+    h.require(session_row(repo, "alice") is None, "delete removes alice session row")
+    h.require("alice" not in queue_entries(repo), "delete removes legacy queue row for alice")
+    h.require(not alice.exists(), "delete removes alice worktree")
+    missing_branch = git(
+        h,
+        "delete: local session branch removed",
+        repo,
+        "show-ref",
+        "--verify",
+        "--quiet",
+        "refs/heads/cocodex/alice",
+        check=False,
+    )
+    h.require(missing_branch.returncode != 0, "delete removes local cocodex/alice branch")
+    manifests = list((repo / ".cocodex" / "deleted").glob("*-alice.json"))
+    h.require(len(manifests) == 1, "delete writes one alice manifest")
+    if manifests:
+        manifest = json.loads(read(manifests[0]))
+        deleted_refs = refs(repo, "refs/cocodex/deleted")
+        h.require(manifest["head_backup_ref"] in deleted_refs, "delete creates head backup ref")
+        h.require(manifest["dirty_backup_ref"] in deleted_refs, "delete creates dirty backup ref")
+        h.require(head(repo, manifest["head_backup_ref"]) == before_branch, "head backup points to old session branch")
+        git(h, "delete: dirty backup ref is a commit", repo, "cat-file", "-e", f"{manifest['dirty_backup_ref']}^{{commit}}")
+
+    set_developer_command(repo, "bob", ["true"])
+    h.run("delete: create bob session", h.cocodex("join", "bob"), repo, timeout=60)
+    db = sqlite3.connect(repo / ".cocodex" / "state.sqlite")
+    try:
+        db.execute(
+            "UPDATE sessions SET state = 'fusing', active_task = 'delete-test-task' WHERE name = 'bob'"
+        )
+        db.commit()
+    finally:
+        db.close()
+    active_refused = h.run("delete: active task refused", h.cocodex("delete", "bob"), repo, check=False)
+    h.require(
+        active_refused.returncode != 0 and "active sync task" in active_refused.stderr,
+        "delete refuses sessions with active sync tasks",
+    )
+
+    set_developer_command(repo, "charlie", ["true"])
+    h.run("delete: create charlie session", h.cocodex("join", "charlie"), repo, timeout=60)
+    charlie_managed = repo / ".cocodex" / "worktrees" / "charlie"
+    charlie_external = repo / "charlie-external-worktree"
+    git(
+        h,
+        "delete: move charlie branch to external worktree",
+        repo,
+        "worktree",
+        "move",
+        str(charlie_managed),
+        str(charlie_external),
+    )
+    checked_out_refused = h.run(
+        "delete: branch checked out elsewhere refused",
+        h.cocodex("delete", "charlie"),
+        repo,
+        check=False,
+    )
+    h.require(
+        checked_out_refused.returncode != 0 and "checked out in another worktree" in checked_out_refused.stderr,
+        "delete refuses when the session branch is checked out outside the managed worktree",
+    )
+
+    live_repo = make_repo(h, "delete-live-session", interval=0.5)
+    live_daemon = start_daemon(h, live_repo, "delete-live-session")
+    live_join = start_join(h, live_repo, "alice", "delete-live-session-alice")
+    connected_refused = h.run(
+        "delete: connected session refused",
+        h.cocodex("delete", "alice"),
+        live_repo,
+        check=False,
+    )
+    h.require(
+        connected_refused.returncode != 0 and "still connected" in connected_refused.stderr,
+        "delete refuses connected sessions",
+    )
+    h.terminate(live_join, "delete-live-session-alice")
+    h.terminate(live_daemon, "delete-live-session-daemon")
+
+
 def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     repo = make_repo(h, "dirty-publish", remote=True)
     daemon = start_daemon(h, repo, "dirty-publish")
@@ -759,9 +891,13 @@ def test_clean_sync_and_dirty_publish(h: Harness) -> None:
     task_text = read(task_path)
     h.require(
         "other sessions catch up or publish only" in task_text
+        and "Required Merge Discipline" in task_text
+        and "behavior is the union of latest `main` and the" in task_text
+        and "stop and ask the user for a resolution" in task_text
+        and "latest-main behaviors you checked still work" in task_text
         and "Cocodex recovery\nrefs" in task_text
         and "best-effort sync the configured remote" not in task_text,
-        "integration task file describes scoped publish behavior",
+        "integration task file describes semantic union and scoped publish behavior",
     )
 
     write(worktree / "feature.txt", "alice dirty feature\n")
@@ -1543,6 +1679,7 @@ def main() -> int:
         test_package_metadata(h)
         test_init_status_config_join(h)
         test_main_guard_blocks_direct_main_writes(h)
+        test_delete_session_cleanup_and_safety(h)
         test_clean_sync_and_dirty_publish(h)
         test_git_merge_fast_path_and_conflict_fallback(h)
         test_configured_remote_pushes_main_and_session_refs(h)

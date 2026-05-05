@@ -11,7 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cocodex")
     subparsers = parser.add_subparsers(
         dest="command",
-        metavar="{init,daemon,join,sync,status,log}",
+        metavar="{init,daemon,join,sync,status,log,delete}",
         required=True,
     )
 
@@ -38,6 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("log")
 
     subparsers.add_parser("sync")
+
+    delete_parser = subparsers.add_parser("delete")
+    delete_parser.add_argument("session", metavar="user_name")
 
     return parser
 
@@ -165,6 +168,38 @@ def _main(argv: list[str] | None = None) -> int:
         db = connect(repo)
         initialize_schema(db)
         print(format_events(db), end="")
+        return 0
+    if args.command == "delete":
+        from .config import find_cocodex_root, load_config, validate_config
+        from .delete import (
+            DeletePartialError,
+            delete_session,
+            format_delete_partial,
+            format_delete_refusal,
+            format_delete_result,
+        )
+        from .state import connect, initialize_schema
+
+        repo = find_cocodex_root()
+        config = load_config(repo)
+        validate_config(repo, config)
+        db = connect(repo)
+        initialize_schema(db)
+        try:
+            result = delete_session(repo, db, config, args.session)
+        except DeletePartialError as exc:
+            print(format_delete_partial(args.session, str(exc)), file=sys.stderr, end="")
+            return 1
+        except (RuntimeError, ValueError) as exc:
+            print(format_delete_refusal(args.session, str(exc)), file=sys.stderr, end="")
+            return 1
+        print(format_delete_result(result), end="")
+        if result.remote_warning is not None:
+            print(
+                "cocodex: warning: remote delete cleanup failed and was skipped; "
+                f"local delete succeeded: {result.remote_warning}",
+                file=sys.stderr,
+            )
         return 0
     if args.command == "sync":
         from .config import find_cocodex_root, load_config, validate_config

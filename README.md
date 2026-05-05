@@ -66,14 +66,19 @@ cocodex status
 cocodex log
 ```
 
-There are no manual recovery commands. If a sync cannot proceed, run
-`cocodex status` or `cocodex log` for inspection, then let the named owning
-developer run `cocodex join <name>` if needed and `cocodex sync` from their own
-managed worktree.
+Maintenance command for an operator cleaning up a retired session:
+
+```bash
+cocodex delete alice
+```
+
+There are no manual recovery commands. `delete` is not a recovery path for a
+stuck sync; it is only for a session that the team has decided to retire. If a
+sync cannot proceed, run `cocodex status` or `cocodex log` for inspection, then
+let the named owning developer run `cocodex join <name>` if needed and
+`cocodex sync` from their own managed worktree.
 
 ## Installation
-
-After the first PyPI release:
 
 ```bash
 pip install cocodex
@@ -207,12 +212,42 @@ cocodex join --tmux-target "$TMUX_PANE" alice
 ```
 
 For normal semantic sync tasks, `join` must be running inside tmux so Cocodex
-can paste the prompt and send Enter. If no tmux target is available, Cocodex
-refuses task startup and restores the session snapshot for retry.
+can paste the prompt into Codex. Cocodex does not press Enter for the
+developer; when the prompt appears in the Codex input box, review it and press
+Enter to start the task. If no tmux target is available, Cocodex refuses task
+startup and restores the session snapshot for retry.
 
 The generated `AGENTS.md` tells Codex that it is in a Cocodex-managed
 collaboration session and that normal synchronization uses only
 `cocodex sync` from inside the managed worktree.
+
+## Deleting An Old Session
+
+When a developer no longer needs an old session, an operator can remove its
+local Cocodex registration and managed resources:
+
+```bash
+cocodex delete alice
+```
+
+`delete` refuses connected sessions, sessions that own the integration lock,
+sessions with an active sync task, worktrees with an unfinished Git operation,
+branches checked out in another worktree, and worktrees that contain ignored
+files other than Cocodex's generated `AGENTS.md`. This keeps deletion out of
+the normal collaboration and recovery flows.
+
+Before removing anything, Cocodex writes a manifest under `.cocodex/deleted/`
+and creates recovery refs under `refs/cocodex/deleted/...`. If the worktree has
+tracked or untracked changes, Cocodex stores them in a dirty backup ref before
+removing the worktree. It then removes the local worktree, deletes the local
+`cocodex/<name>` branch, removes the session and queue rows from state, and
+records a `session_deleted` event.
+
+The developer entry in `.cocodex/config.json` is intentionally kept. Remove it
+manually only if that developer should no longer be able to run
+`cocodex join <name>`. If a remote is configured, delete also tries to push the
+deleted-session backup refs and remove the remote `cocodex/<name>` branch; remote
+failure is reported as a warning and does not roll back local cleanup.
 
 ## Restarting A Session
 
@@ -283,15 +318,20 @@ lock is free, Cocodex:
 
 If Git reports a conflict, leaves an unsafe state, or the lightweight checks
 fail, Cocodex resets Alice's worktree to latest `main`, writes a task file under
-`.cocodex/tasks/`, pastes the sync prompt into Alice's Codex terminal, and sends
-Enter. A semantic task is accepted only after that prompt injection succeeds.
-If Cocodex cannot safely inject the prompt, it restores Alice's snapshot, releases
-the lock, rejects this `sync`, and leaves Alice's work available for retry.
-Alice's Codex then reads the task file and re-implements or semantically merges
-Alice's feature on top of the latest `main`. If the task arrives while Codex is
-working on another request, Codex should pause at a safe point, preserve that
-request's remaining intent, complete the sync task, and then resume the paused
-work after sync succeeds.
+`.cocodex/tasks/`, and pastes the sync prompt into Alice's Codex input box.
+A semantic task is accepted once the prompt has been delivered to the pane, but
+Cocodex does not submit it automatically. Alice should press Enter in Codex to
+start the task. If Cocodex cannot safely deliver the prompt, it restores Alice's
+snapshot, releases the lock, rejects this `sync`, and leaves Alice's work
+available for retry. Alice's Codex then reads the task file and re-implements
+or semantically merges Alice's feature on top of the latest `main`. The target
+candidate is the behavioral union of latest `main` and Alice's snapshot. If
+Codex finds a genuine contradiction between the two sides, such as mutually
+exclusive product behavior, API contracts, schemas, or data invariants, it must
+ask the user how to resolve it instead of silently dropping one side. If the
+task arrives while Codex is working on another request, Codex should pause at a
+safe point, preserve that request's remaining intent, complete the sync task,
+and then resume the paused work after sync succeeds.
 
 For each task, Codex designs and runs sufficient validation for the semantic
 merge. That can mean existing tests, new or updated tests, targeted scripts, or
@@ -456,6 +496,7 @@ Common operator commands:
 cocodex init --main main --remote origin
 cocodex daemon
 cocodex join alice
+cocodex delete alice
 cocodex status
 cocodex log
 ```
@@ -498,6 +539,11 @@ keep their own worktrees unchanged and retry after the owner finishes.
 `version mismatch` means the daemon and a running `cocodex join` agent are from
 different Cocodex versions. Stop and restart that developer's `cocodex join`
 after upgrading the installed package.
+
+`cocodex delete refused for alice` means the session is not safe to remove yet.
+The output names the exact blocker. For active tasks, the owner should rejoin
+and finish `cocodex sync`; for connected sessions, close the old `join` process;
+for ignored files, inspect or archive the worktree before retrying delete.
 
 If local `main` advances but the Git remote never changes, check
 `cocodex status` and `.cocodex/config.json`. Cocodex only pushes when

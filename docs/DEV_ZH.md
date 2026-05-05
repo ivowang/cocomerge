@@ -20,7 +20,7 @@ daemon 和 session agent 通过 Unix domain socket 传输 JSONL 消息。Git 操
 daemon socket 通过配置的 `socket_path` 寻址。如果这个路径超过 Linux
 `AF_UNIX` 限制，transport 会在配置路径写一个小的 pointer file，并把真正的 socket bind 到系统临时目录下。每个 session 的 control socket 也使用系统临时目录下的短路径，并用 repository hash 和 session name 区分。这样可以避免项目路径很深或位于 CI 临时目录时触发 path length 限制。
 
-`SessionAgent` 可以把 sync prompt 粘贴到 tmux 中。`join` 会在环境里存在 `TMUX_PANE` 时默认使用当前 pane，这符合“开发者从自己的 tmux pane 中通过 Cocodex 启动 Codex”的产品约束。高级启动器可以用 `--tmux-target` 覆盖检测到的目标。收到 `start_fusion` 后，agent 总会在 task file 旁边写出 prompt file 并打印二者路径；如果有可用目标 pane，也会额外通过 `tmux load-buffer`、`paste-buffer` 和 `send-keys Enter` 注入 prompt。生产路径要求 prompt 注入成功后才接受 semantic task；测试 harness 可以设置 `COCODEX_HEADLESS_PROMPT_OK=1`，把写出 prompt file 视为已投递。
+`SessionAgent` 可以把 sync prompt 粘贴到 tmux 中。`join` 会在环境里存在 `TMUX_PANE` 时默认使用当前 pane，这符合“开发者从自己的 tmux pane 中通过 Cocodex 启动 Codex”的产品约束。高级启动器可以用 `--tmux-target` 覆盖检测到的目标。收到 `start_fusion` 后，agent 总会在 task file 旁边写出 prompt file 并打印二者路径；如果有可用目标 pane，也会额外通过 `tmux load-buffer` 和 `paste-buffer` 把 prompt 放进 Codex 输入框。它不会发送 Enter；开发者需要看一下粘贴的 prompt，然后自己按 Enter 启动 task。生产路径要求 prompt 成功投递到 pane 后才接受 semantic task；测试 harness 可以设置 `COCODEX_HEADLESS_PROMPT_OK=1`，把写出 prompt file 视为已投递。
 
 ## 配置模型
 
@@ -59,7 +59,9 @@ cocodex sync
 
 本地 catch-up、publish 或 task 启动成功后，CLI 会在配置了 `config.remote` 时尝试 best-effort remote sync。该操作会 force-push 本地 `main_branch`、当前 session branch 和 `refs/cocodex/*` recovery refs 到 remote，不会 push、prune 或 fast-forward 其他开发者 branch。被拒绝的 sync 不会修改远端 ref。失败或超时只打印 warning，不应改变 `sync` 的退出状态。
 
-没有手动恢复命令。`sync` 是 owner session 的恢复入口；`status` 和 `log` 只提供只读诊断。
+没有手动恢复命令。`sync` 是 owner session 的恢复入口；`status` 和 `log`
+只提供只读诊断。`delete <name>` 是 operator 用来清理已废弃 session 的维护命令，
+不是 active sync task 的恢复命令。
 
 daemon 不会自动把 dirty session 入队。dirty work 会留在本地，直到 owner 显式运行 `sync`。
 
@@ -153,9 +155,9 @@ daemon loop 依次执行：
 
 `ready_to_integrate` 会在来自 `cocodex sync` 的同一次请求内完成 integration 启动。它会同时认领 lock 和 active task，发送 `freeze`，准备 snapshot，把 snapshot/base ref 保存到 `refs/cocodex/`，尝试 clean Git merge fast path，然后在返回前完成发布或启动 semantic task。第二个 session 会收到 `integration busy`，之后需要重试。
 
-semantic task 只有在 `start_fusion` 返回 ack 且 prompt delivery 成功后才算启动成功。如果 prompt delivery 失败，Cocodex 会把 snapshot commit 恢复到 session worktree，释放 lock，清理 active task，并拒绝这次 `sync`。
+semantic task 只有在 `start_fusion` 返回 ack 且 prompt delivery 成功后才算启动成功。这里的 delivery 指 prompt file 已写出，并且 prompt 已粘贴到配置的 tmux pane；Cocodex 不会自动发送 Enter。如果 prompt delivery 失败，Cocodex 会把 snapshot commit 恢复到 session worktree，释放 lock，清理 active task，并拒绝这次 `sync`。
 
-task file 由 `src/cocodex/tasks.py` 创建，包含 snapshot commit、latest main、last seen main、diff summary、中断当前开发请求时的处理要求、validation report 要求，以及提交 candidate 后在同一个 worktree 中再次运行 `cocodex sync` 的指令。
+task file 由 `src/cocodex/tasks.py` 创建，包含 snapshot commit、latest main、last seen main、diff summary、中断当前开发请求时的处理要求、语义并集要求、矛盾处理规则、validation report 要求，以及提交 candidate 后在同一个 worktree 中再次运行 `cocodex sync` 的指令。
 
 ## 发布流程
 
@@ -235,6 +237,34 @@ Task recovery：
 - disconnected active task 属于同 owner 可恢复状态：`cocodex join <name>` 会重新提示 task，同一个 session 在提交 candidate 并写好 validation 后再次运行 `cocodex sync` 可以发布；
 - `cocodex status` 会显示 active session 的 task file、validation file、snapshot/base refs、lock owner 和下一步提示；
 - 旧版本遗留的 taskless 状态会由 `sync`、`join` 或 daemon startup 归一化；不能安全处理的状态会被拒绝并说明 owner session 应该执行的动作，而不是要求手动恢复命令。
+
+## Session 删除
+
+`cocodex delete <name>` 的实现位于 `src/cocodex/delete.py`。它用于把已废弃
+session 从本地 Cocodex state 和 managed Git 资源中移除，同时保留可恢复面。
+
+以下情况会拒绝执行：
+
+- session 仍 connected，或记录的进程 pid 看起来仍然存活；
+- session 持有 integration lock；
+- session 有 active task；
+- managed worktree 不在预期的 `cocodex/<name>` branch；
+- worktree 中存在未完成的 Git 操作；
+- session branch 被其他 worktree checkout；
+- worktree 中有除 Cocodex 生成的 `AGENTS.md` 之外的 ignored files。
+
+成功时，命令会创建 `.cocodex/deleted/<timestamp>-<name>.json`，把 session
+branch head 保存到 `refs/cocodex/deleted/<timestamp>/<name>/head`。如果
+worktree 有 tracked 或 untracked 改动，还会用
+`git stash push --include-untracked` 生成 dirty commit，并保存到
+`refs/cocodex/deleted/<timestamp>/<name>/dirty`。只有在这些 ref 和 manifest
+写好之后，才会移除 worktree、删除本地 `cocodex/<name>` branch、删除
+`sessions` 和 `queue` 行，并记录 `session_deleted` event。
+
+`.cocodex/config.json` 里的 developer entry 不会被自动删除。配置表示谁可以
+join；session 删除只移除当前本地 session 实例。如果设置了 `config.remote`，
+delete 会 best-effort push deleted-session refs，并删除远端 session branch。
+远端清理失败只作为本地清理之后的 warning，这和 `sync` 的远端失败策略一致。
 
 ## 维护说明
 

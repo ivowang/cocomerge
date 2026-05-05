@@ -995,6 +995,10 @@ def handle_session_message(
         worktree = message.get("worktree") or str(repo / config.worktree_root / session_name)
         existing = get_session(db, session_name)
         if existing is not None:
+            if existing.state == "deleting":
+                raise RuntimeError(
+                    f"session {session_name} is being deleted; wait for delete to finish before rejoining"
+                )
             if existing.branch != branch or existing.worktree != worktree:
                 raise RuntimeError(f"conflicting registration for session: {session_name}")
             update_session_runtime(
@@ -1032,8 +1036,11 @@ def handle_session_message(
         return {"type": "registered", "session": session_name}
 
     if message_type == "heartbeat":
-        if get_session(db, session_name) is None:
+        session = get_session(db, session_name)
+        if session is None:
             raise RuntimeError(f"unknown session: {session_name}")
+        if session.state == "deleting":
+            raise RuntimeError(f"session {session_name} is being deleted")
         agent_version = _message_agent_version(message)
         touch_session_heartbeat(db, session_name, now(), agent_version=agent_version)
         _handle_agent_version(db, session_name, agent_version, reject=False)

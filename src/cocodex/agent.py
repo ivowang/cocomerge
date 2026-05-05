@@ -192,14 +192,25 @@ def build_sync_prompt(session: str, task_file: Path) -> str:
             "",
             "Read the task file now. Treat the current worktree as the latest main branch.",
             "Re-implement or semantically merge the snapshot feature described there on top",
-            "of this latest main. Do not run git pull, git merge main, or git push main.",
+            "of this latest main. The required candidate is the behavioral union of",
+            "latest main plus the snapshot feature: preserve both sides unless the user",
+            "explicitly chooses otherwise. Use latest main as the architectural baseline",
+            "and re-express the snapshot work in that current design; do not blindly",
+            "replay old diff text, and do not drop functionality because the merge is hard.",
+            "Do not run git pull, git merge main, or git push main.",
+            "",
+            "If you find genuinely contradictory requirements, APIs, schemas, data",
+            "invariants, or user-visible behavior, stop and ask the user which resolution",
+            "they want. Do not arbitrarily choose one side, delete one feature, or mark",
+            "the task complete until the contradiction has a user-approved resolution.",
             "",
             "When the candidate is complete:",
-            "1. design and run sufficient tests or checks for this semantic merge;",
-            "2. commit the final candidate with this session's configured Git identity;",
-            "3. ensure the worktree is clean;",
-            "4. write the validation report requested by the task file;",
-            "5. run `cocodex sync` again from this worktree so Cocodex can publish it",
+            "1. verify latest main behavior still works and the snapshot behavior is present;",
+            "2. design and run sufficient tests or checks for this semantic merge;",
+            "3. commit the final candidate with this session's configured Git identity;",
+            "4. ensure the worktree is clean;",
+            "5. write the validation report requested by the task file;",
+            "6. run `cocodex sync` again from this worktree so Cocodex can publish it",
             "to local `main` and best-effort sync local `main`, this session branch,",
             "and Cocodex recovery refs.",
             "",
@@ -223,7 +234,7 @@ def send_prompt_to_tmux(target: str, prompt: str, *, session: str) -> None:
     buffer_name = f"cocodex-{safe_session}"
     load = subprocess.run(
         ["tmux", "load-buffer", "-b", buffer_name, "-"],
-        input=prompt,
+        input=prompt.rstrip("\n"),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -240,15 +251,6 @@ def send_prompt_to_tmux(target: str, prompt: str, *, session: str) -> None:
     )
     if paste.returncode != 0:
         raise RuntimeError(paste.stderr.strip() or "tmux paste-buffer failed")
-    enter = subprocess.run(
-        ["tmux", "send-keys", "-t", target, "Enter"],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
-    if enter.returncode != 0:
-        raise RuntimeError(enter.stderr.strip() or "tmux send-keys failed")
 
 
 def truthy_env(value: str | None) -> bool:

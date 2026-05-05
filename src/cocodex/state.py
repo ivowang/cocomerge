@@ -275,6 +275,97 @@ def dequeue_session(db: sqlite3.Connection, name: str) -> None:
     db.commit()
 
 
+def delete_session_record(
+    db: sqlite3.Connection,
+    name: str,
+    *,
+    backup_refs: list[str],
+    manifest: str,
+    worktree_removed: bool,
+    branch_deleted: bool,
+) -> None:
+    queue_cursor = db.execute("DELETE FROM queue WHERE session = ?", (name,))
+    session_cursor = db.execute("DELETE FROM sessions WHERE name = ?", (name,))
+    _record_event(
+        db,
+        "session_deleted",
+        {
+            "session": name,
+            "session_record_removed": bool(session_cursor.rowcount),
+            "queue_record_removed": bool(queue_cursor.rowcount),
+            "worktree_removed": worktree_removed,
+            "branch_deleted": branch_deleted,
+            "backup_refs": backup_refs,
+            "manifest": manifest,
+        },
+    )
+    db.commit()
+
+
+def claim_session_deletion(
+    db: sqlite3.Connection,
+    name: str,
+    *,
+    expected_branch: str,
+    expected_worktree: str,
+) -> SessionRecord | None:
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        lock = db.execute(
+            "SELECT owner, task_id FROM locks WHERE name = 'integration'"
+        ).fetchone()
+        if lock is not None and lock["owner"] == name:
+            raise RuntimeError(
+                f"session owns the integration lock for task {lock['task_id']}; "
+                "finish that sync before deleting it"
+            )
+        row = db.execute("SELECT * FROM sessions WHERE name = ?", (name,)).fetchone()
+        if row is None:
+            db.commit()
+            return None
+        if row["branch"] != expected_branch or row["worktree"] != expected_worktree:
+            raise RuntimeError(f"session changed while delete was starting: {name}")
+        if row["active_task"] is not None:
+            raise RuntimeError(
+                f"session has active sync task {row['active_task']}; finish that sync before deleting it"
+            )
+        cursor = db.execute(
+            """
+            UPDATE sessions
+            SET state = 'deleting',
+                pid = NULL,
+                control_socket = NULL,
+                connected = 0,
+                last_heartbeat = NULL,
+                updated_at = ?
+            WHERE name = ?
+              AND active_task IS NULL
+              AND connected = 0
+            """,
+            (time.time(), name),
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                f"session {name!r} became active while delete was starting; close join and retry"
+            )
+        _record_event(
+            db,
+            "session_transition",
+            {
+                "session": name,
+                "state": "deleting",
+                "reason": "delete claimed session",
+                "active_task": None,
+            },
+        )
+        updated = db.execute("SELECT * FROM sessions WHERE name = ?", (name,)).fetchone()
+        db.commit()
+        return _row_to_session(updated)
+    except Exception:
+        db.rollback()
+        raise
+
+
 def claim_integration_task(
     db: sqlite3.Connection,
     name: str,

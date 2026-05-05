@@ -49,6 +49,11 @@ def ensure_session_worktree(
 
     existing = get_session(db, session)
     if existing is not None:
+        if existing.state == "deleting":
+            raise RuntimeError(
+                f"Session {session!r} is currently being deleted. "
+                "Wait for `cocodex delete` to finish before joining again."
+            )
         if existing.branch != branch:
             raise ValueError(
                 f"Existing session {session!r} uses branch {existing.branch!r}, expected {branch!r}"
@@ -181,6 +186,9 @@ def _session_agents_content(*, session: str, branch: str, config: CocodexConfig)
             "validation report requested by the task file before running sync again.",
             "When this Codex session starts or restarts, handle any Cocodex restart",
             "notice before accepting or continuing unrelated feature work.",
+            "For semantic merge tasks, the required result is the behavioral union",
+            "of latest `main` and this session's snapshot work. Preserve both sides",
+            "unless the task file or the user explicitly says otherwise.",
             "",
             "During normal collaboration, use one Cocodex command:",
             "",
@@ -197,6 +205,13 @@ def _session_agents_content(*, session: str, branch: str, config: CocodexConfig)
             "Only when Cocodex prints or pastes a task file path should you read that task",
             "file, treat the current worktree as latest `main`, and re-implement or",
             "semantically merge the snapshot described by the task on top of latest `main`.",
+            "Use latest `main` as the architectural baseline and re-express the",
+            "snapshot feature in that current design; do not blindly replay old diff",
+            "text, and do not drop either side just because the merge is hard.",
+            "If latest `main` and the snapshot contain genuinely contradictory",
+            "requirements, APIs, schemas, data invariants, or user-visible behavior,",
+            "stop and ask the user which resolution they want. Do not arbitrarily",
+            "choose one side or hide the conflict in the final commit.",
             "If the task interrupts another request, pause at a safe point, preserve",
             "the remaining intent, finish the sync task, then resume the paused work.",
             "",
@@ -308,6 +323,9 @@ def _active_task_notice(repo: Path, session: SessionRecord) -> str:
             "",
             "Do not begin new feature work yet. Read the task file, finish the task,",
             "write validation, and run `cocodex sync` again from this worktree.",
+            "The candidate must preserve the behavioral union of latest main and",
+            "this session's snapshot. Ask the user before resolving genuine",
+            "contradictions between the two sides.",
             "",
         ]
         return "\n".join(body)
@@ -326,8 +344,11 @@ def _active_task_notice(repo: Path, session: SessionRecord) -> str:
         [
             "",
             "Read the task file now. Treat the current worktree as the latest main branch.",
-            "Finish the semantic merge before starting new feature work. If the candidate",
-            "is already committed, make sure the validation report exists and run:",
+            "Finish the semantic merge before starting new feature work. The candidate",
+            "must preserve the behavioral union of latest main and this session's snapshot.",
+            "If the two sides have a genuine contradiction, ask the user to choose the",
+            "resolution instead of silently dropping one side. If the candidate is already",
+            "committed, make sure the validation report exists and run:",
             "",
             "    cocodex sync",
             "",

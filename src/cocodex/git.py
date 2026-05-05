@@ -160,6 +160,93 @@ def try_force_push_session_refs(
     return None
 
 
+def try_sync_deleted_session_refs(
+    repo: Path,
+    remote: str | None,
+    *,
+    session_branch: str,
+    backup_refs: list[str],
+    timeout: float = 30.0,
+) -> str | None:
+    if remote is None:
+        return None
+
+    errors: list[str] = []
+    push_env = os.environ.copy()
+    push_env["COCODEX_INTERNAL_WRITE"] = "1"
+
+    if backup_refs:
+        result = _remote_git_result(
+            [
+                "git",
+                "push",
+                "--force",
+                remote,
+                *[f"+{ref}:{ref}" for ref in backup_refs],
+            ],
+            repo=repo,
+            timeout=timeout,
+            env=push_env,
+        )
+        if isinstance(result, str):
+            errors.append(f"push deleted-session backup refs failed: {result}")
+        elif result.returncode != 0:
+            errors.append(_compact_git_error("push deleted-session backup refs", result))
+
+    ls_remote = _remote_git_result(
+        ["git", "ls-remote", "--heads", remote, session_branch],
+        repo=repo,
+        timeout=timeout,
+        env=push_env,
+    )
+    if isinstance(ls_remote, str):
+        errors.append(f"check remote branch {session_branch} failed: {ls_remote}")
+    elif ls_remote.returncode != 0:
+        errors.append(_compact_git_error(f"check remote branch {session_branch}", ls_remote))
+    elif ls_remote.stdout.strip():
+        delete_remote = _remote_git_result(
+            ["git", "push", remote, f":refs/heads/{session_branch}"],
+            repo=repo,
+            timeout=timeout,
+            env=push_env,
+        )
+        if isinstance(delete_remote, str):
+            errors.append(f"delete remote branch {session_branch} failed: {delete_remote}")
+        elif delete_remote.returncode != 0:
+            errors.append(_compact_git_error(f"delete remote branch {session_branch}", delete_remote))
+
+    return "; ".join(errors) if errors else None
+
+
+def _remote_git_result(
+    command: list[str],
+    *,
+    repo: Path,
+    timeout: float,
+    env: dict[str, str],
+) -> subprocess.CompletedProcess[str] | str:
+    try:
+        return subprocess.run(
+            command,
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
+    except Exception as exc:
+        return str(exc)
+
+
+def _compact_git_error(action: str, result: subprocess.CompletedProcess[str]) -> str:
+    detail = (result.stderr or result.stdout).strip().replace("\n", " ")
+    if not detail:
+        detail = f"exit {result.returncode}"
+    return f"{action} failed: {detail}"
+
+
 def add_all(repo: Path) -> None:
     run_git(repo, ["add", "-A"])
 

@@ -43,9 +43,11 @@ matches the product constraint that developers start Codex through Cocodex from
 their own tmux pane. `--tmux-target` can override the detected target for
 advanced launchers. On `start_fusion`, the agent always writes a prompt file
 next to the task file and prints both paths; if a target is available, it also
-uses `tmux load-buffer`, `paste-buffer`, and `send-keys Enter`. Production
-semantic task startup requires successful prompt injection. Test harnesses can
-set `COCODEX_HEADLESS_PROMPT_OK=1` to treat the prompt file as delivered.
+uses `tmux load-buffer` and `paste-buffer` to place the prompt in the Codex
+input box. It deliberately does not send Enter; the developer reviews the
+pasted prompt and presses Enter to start the task. Production semantic task
+startup requires successful prompt delivery to the pane. Test harnesses can set
+`COCODEX_HEADLESS_PROMPT_OK=1` to treat the prompt file as delivered.
 
 ## Configuration
 
@@ -109,7 +111,9 @@ branches. Refused syncs do not mutate remote refs. Remote failures or timeouts
 only produce warnings; they must not change the sync exit status.
 
 There are no manual recovery commands. `sync` is the recovery surface for the
-owning session. `status` and `log` are read-only diagnostics.
+owning session. `status` and `log` are read-only diagnostics. `delete <name>`
+is an operator maintenance command for retired sessions, not a recovery command
+for active sync tasks.
 
 The daemon does not automatically queue dirty sessions. Dirty work stays local
 until the owning session explicitly runs `sync`.
@@ -269,14 +273,17 @@ starts a semantic task before replying. A second session receives
 `integration busy` and must retry later.
 
 Semantic task startup is accepted only if `start_fusion` returns an ack with
-successful prompt delivery. If prompt delivery fails, Cocodex restores the
-snapshot commit into the session worktree, releases the lock, clears the active
-task, and refuses the `sync`.
+successful prompt delivery. Delivery means the prompt was written to a prompt
+file and pasted into the configured tmux pane; Cocodex does not submit the
+prompt with Enter. If prompt delivery fails, Cocodex restores the snapshot
+commit into the session worktree, releases the lock, clears the active task,
+and refuses the `sync`.
 
 The task file is created by `src/cocodex/tasks.py`. It includes the snapshot
 commit, latest main, last seen main, diff summary, interruption-handling
-guidance, validation-report requirements, and the instruction to run
-`cocodex sync` again from the same worktree after committing the candidate.
+guidance, semantic-union requirements, contradiction handling rules,
+validation-report requirements, and the instruction to run `cocodex sync` again
+from the same worktree after committing the candidate.
 
 ## Publishing Flow
 
@@ -393,6 +400,39 @@ Task recovery:
 - legacy taskless states are normalized by `sync`, `join`, or daemon startup;
   unsafe states are refused with owner-specific instructions instead of manual
   recovery commands.
+
+## Session Deletion
+
+`cocodex delete <name>` is implemented in `src/cocodex/delete.py`. It removes a
+retired session from local Cocodex state and managed Git resources while keeping
+a recovery surface.
+
+The command refuses to run when:
+
+- the session is connected or its recorded process id still appears alive;
+- the session owns the integration lock;
+- the session has an active task;
+- the managed worktree is not on the expected `cocodex/<name>` branch;
+- the worktree has an unfinished Git operation;
+- the session branch is checked out in another worktree;
+- the worktree contains ignored files other than Cocodex's generated
+  `AGENTS.md`.
+
+On success it creates `.cocodex/deleted/<timestamp>-<name>.json`, stores the
+session branch head under `refs/cocodex/deleted/<timestamp>/<name>/head`, and,
+if tracked or untracked work exists, stores a `git stash push
+--include-untracked` commit under
+`refs/cocodex/deleted/<timestamp>/<name>/dirty`. Only after these refs and the
+manifest exist does it remove the worktree, delete the local
+`cocodex/<name>` branch, remove `sessions` and `queue` rows, and record a
+`session_deleted` event.
+
+The developer entry in `.cocodex/config.json` is deliberately not removed.
+Configuration describes who may join; session deletion only removes the current
+local session instance. If `config.remote` is set, delete best-effort pushes the
+deleted-session refs and removes the remote session branch. Remote cleanup
+failure is a warning after local cleanup, matching sync's non-fatal remote
+policy.
 
 ## Development Notes
 
